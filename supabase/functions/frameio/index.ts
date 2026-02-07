@@ -6,106 +6,32 @@ const corsHeaders = {
 };
 
 interface FrameIORequest {
-  action: 'get_feedback' | 'upload' | 'get_projects' | 'get_assets';
+  action: 'get_feedback' | 'upload' | 'get_projects' | 'get_assets' | 'get_auth_url' | 'exchange_code' | 'disconnect';
   projectId?: string;
   frameioProjectId?: string;
   assetId?: string;
   uploadId?: string;
   fileName?: string;
   fileSize?: number;
+  code?: string;
+  redirectUri?: string;
 }
 
-const FRAMEIO_API_BASE = 'https://api.frame.io/v2';
 const FRAMEIO_V4_API_BASE = 'https://api.frame.io/v4';
+const ADOBE_IMS_AUTH_URL = 'https://ims-na1.adobelogin.com/ims/authorize/v2';
+const ADOBE_IMS_TOKEN_URL = 'https://ims-na1.adobelogin.com/ims/token/v3';
 
-// Cache for OAuth token
-let cachedOAuthToken: { token: string; expiresAt: number } | null = null;
-
-// Get OAuth access token using client credentials (with fallback to developer token)
-async function getOAuthToken(): Promise<string> {
-  // Check if we have a valid cached token (with 5 min buffer)
-  if (cachedOAuthToken && cachedOAuthToken.expiresAt > Date.now() + 300000) {
-    console.log('Using cached OAuth token');
-    return cachedOAuthToken.token;
-  }
-
-  const clientId = Deno.env.get('FRAMEIO_CLIENT_ID');
-  const clientSecret = Deno.env.get('FRAMEIO_CLIENT_SECRET');
-  const devToken = Deno.env.get('FRAMEIO_API_TOKEN');
-
-  // If no OAuth credentials, use developer token directly
-  if (!clientId || !clientSecret) {
-    if (devToken) {
-      console.log('Using legacy developer token (OAuth not configured)');
-      return devToken;
-    }
-    throw new Error('Frame.io credentials not configured. Set either OAuth credentials (FRAMEIO_CLIENT_ID, FRAMEIO_CLIENT_SECRET) or FRAMEIO_API_TOKEN');
-  }
-
-  // Try OAuth first, fall back to developer token if it fails
-  try {
-    console.log('Fetching new OAuth token from Adobe IMS...');
-    
-    const tokenUrl = 'https://ims-na1.adobelogin.com/ims/token/v3';
-    const params = new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: clientSecret,
-      scope: 'openid,AdobeID,read_organizations,frameio.assets,frameio.projects.read,frameio.projects.write',
-    });
-
-    const response = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: params.toString(),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('OAuth token error:', response.status, errorText);
-      throw new Error(`OAuth failed: ${response.status}`);
-    }
-
-    const data = await response.json();
-    
-    // Cache the token
-    cachedOAuthToken = {
-      token: data.access_token,
-      expiresAt: Date.now() + (data.expires_in * 1000),
-    };
-    
-    console.log('Successfully obtained OAuth token');
-    return data.access_token;
-  } catch (oauthError) {
-    // OAuth failed - try falling back to developer token
-    console.warn('OAuth authentication failed, attempting fallback to developer token:', oauthError);
-    
-    if (devToken) {
-      console.log('Using developer token as fallback');
-      return devToken;
-    }
-    
-    // No fallback available - throw the original error
-    throw new Error(`Frame.io authentication failed: ${oauthError instanceof Error ? oauthError.message : 'Unknown error'}. Configure FRAMEIO_API_TOKEN as a fallback.`);
-  }
-}
-
-// Frame.io API helper - supports both V2 and V4
-async function frameioRequest(
+// Frame.io V4 API helper using user's OAuth token
+async function frameioV4Request(
+  accessToken: string,
   endpoint: string,
   method: string = 'GET',
-  body?: unknown,
-  useV4: boolean = false
+  body?: unknown
 ): Promise<any> {
-  const token = await getOAuthToken();
-  const baseUrl = useV4 ? FRAMEIO_V4_API_BASE : FRAMEIO_API_BASE;
-  
-  const response = await fetch(`${baseUrl}${endpoint}`, {
+  const response = await fetch(`${FRAMEIO_V4_API_BASE}${endpoint}`, {
     method,
     headers: {
-      'Authorization': `Bearer ${token}`,
+      'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -113,188 +39,212 @@ async function frameioRequest(
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`Frame.io API error (${useV4 ? 'V4' : 'V2'}): ${response.status}`, errorText);
-    throw new Error(`Frame.io API error: ${response.status}`);
+    console.error(`Frame.io V4 API error: ${response.status}`, errorText);
+    throw new Error(`Frame.io API error: ${response.status} - ${errorText}`);
   }
 
   return response.json();
 }
 
-// Get list of Frame.io projects (handles both team and personal accounts)
-async function getProjects(): Promise<any> {
-  const allProjects: any[] = [];
+// Get or refresh user's V4 access token
+async function getV4AccessToken(
+  serviceClient: any,
+  userId: string
+): Promise<{ accessToken: string; accountId: string } | null> {
+  // Fetch stored token
+  const { data: tokenData, error } = await serviceClient
+    .from('frameio_oauth_tokens')
+    .select('*')
+    .eq('user_id', userId)
+    .single();
 
-  // First try V4 API (for newer Frame.io Next accounts)
-  try {
-    console.log('Trying V4 API for projects...');
-    const v4Response = await frameioRequest('/projects', 'GET', undefined, true);
-    console.log('V4 projects response:', JSON.stringify(v4Response));
+  if (error || !tokenData) {
+    console.log('No stored Frame.io token found for user');
+    return null;
+  }
+
+  // Check if token is expired (with 5 min buffer)
+  const expiresAt = new Date(tokenData.expires_at);
+  const now = new Date();
+  const bufferMs = 5 * 60 * 1000;
+
+  if (expiresAt.getTime() - bufferMs <= now.getTime()) {
+    console.log('Token expired, refreshing...');
     
-    // V4 returns paginated data
-    const projects = v4Response.data || v4Response;
-    if (Array.isArray(projects) && projects.length > 0) {
-      allProjects.push(...projects.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        teamId: p.workspace_id || p.team_id || '',
-        teamName: p.workspace?.name || 'Workspace',
-        rootAssetId: p.root_asset_id,
-      })));
-      console.log(`Found ${allProjects.length} projects via V4 API`);
-      return allProjects;
+    const clientId = Deno.env.get('FRAMEIO_CLIENT_ID');
+    const clientSecret = Deno.env.get('FRAMEIO_CLIENT_SECRET');
+
+    if (!clientId || !clientSecret) {
+      throw new Error('OAuth credentials not configured');
     }
-  } catch (v4Error) {
-    console.log('V4 API failed (might need OAuth token):', v4Error);
+
+    // Refresh the token
+    const params = new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: tokenData.refresh_token,
+    });
+
+    const response = await fetch(ADOBE_IMS_TOKEN_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Token refresh failed:', response.status, errorText);
+      // Delete invalid token
+      await serviceClient.from('frameio_oauth_tokens').delete().eq('user_id', userId);
+      return null;
+    }
+
+    const newTokenData = await response.json();
+    const newExpiresAt = new Date(Date.now() + newTokenData.expires_in * 1000);
+
+    // Update stored token
+    await serviceClient
+      .from('frameio_oauth_tokens')
+      .update({
+        access_token: newTokenData.access_token,
+        refresh_token: newTokenData.refresh_token || tokenData.refresh_token,
+        expires_at: newExpiresAt.toISOString(),
+      })
+      .eq('user_id', userId);
+
+    return {
+      accessToken: newTokenData.access_token,
+      accountId: tokenData.account_id,
+    };
   }
-
-  // Fallback to V2 API
-  try {
-    const me = await frameioRequest('/me');
-    console.log('Frame.io user:', me.email);
-    console.log('Frame.io account_id:', me.account_id);
-    
-    // Try getting projects via accounts
-    try {
-      const accounts = await frameioRequest('/accounts');
-      console.log('Found accounts:', accounts.length);
-      
-      for (const account of accounts) {
-        try {
-          const projects = await frameioRequest(`/accounts/${account.id}/projects`);
-          if (Array.isArray(projects)) {
-            allProjects.push(...projects.map((p: any) => ({
-              id: p.id,
-              name: p.name,
-              teamId: account.id,
-              teamName: account.name || 'Personal',
-              rootAssetId: p.root_asset_id,
-            })));
-          }
-        } catch (e) {
-          console.error(`Failed to get projects for account ${account.id}:`, e);
-        }
-      }
-    } catch (accountError) {
-      console.log('Accounts endpoint failed, trying teams:', accountError);
-      
-      // Fallback to teams endpoint
-      try {
-        const teams = await frameioRequest('/teams');
-        console.log('Found teams:', teams.length);
-        
-        for (const team of teams) {
-          try {
-            const projects = await frameioRequest(`/teams/${team.id}/projects`);
-            if (Array.isArray(projects)) {
-              allProjects.push(...projects.map((p: any) => ({
-                id: p.id,
-                name: p.name,
-                teamId: team.id,
-                teamName: team.name,
-                rootAssetId: p.root_asset_id,
-              })));
-            }
-          } catch (e) {
-            console.error(`Failed to get projects for team ${team.id}:`, e);
-          }
-        }
-      } catch (teamError) {
-        console.error('Teams endpoint also failed:', teamError);
-      }
-    }
-
-    // If still no projects, try direct account fetch
-    if (allProjects.length === 0 && me.account_id) {
-      try {
-        console.log('Trying direct account projects fetch for:', me.account_id);
-        const projects = await frameioRequest(`/accounts/${me.account_id}/projects`);
-        if (Array.isArray(projects)) {
-          allProjects.push(...projects.map((p: any) => ({
-            id: p.id,
-            name: p.name,
-            teamId: me.account_id,
-            teamName: 'My Projects',
-            rootAssetId: p.root_asset_id,
-          })));
-        }
-      } catch (e) {
-        console.error('Direct account projects fetch failed:', e);
-      }
-    }
-  } catch (meError) {
-    console.error('V2 /me endpoint failed:', meError);
-  }
-
-  console.log('Total projects found:', allProjects.length);
-  
-  if (allProjects.length === 0) {
-    console.log('No projects found via API. Your Frame.io account may be on the newer V4 platform which requires OAuth authentication. Please use the manual Project ID entry instead.');
-  }
-  
-  return allProjects;
-}
-
-// Get assets (files/folders) in a project
-async function getAssets(rootAssetId: string): Promise<any[]> {
-  const assets = await frameioRequest(`/assets/${rootAssetId}/children`);
-  return assets.map((a: any) => ({
-    id: a.id,
-    name: a.name,
-    type: a.type,
-    status: a.status,
-    createdAt: a.created_at,
-    viewerUrl: a.is_session_watermarked ? null : `https://app.frame.io/player/${a.id}`,
-  }));
-}
-
-// Get comments/feedback for an asset
-async function getFeedback(assetId: string): Promise<string[]> {
-  const comments = await frameioRequest(`/assets/${assetId}/comments`);
-  
-  return comments.map((c: any) => {
-    let text = c.text || '';
-    if (c.timestamp) {
-      const mins = Math.floor(c.timestamp / 60);
-      const secs = Math.floor(c.timestamp % 60);
-      text = `[${mins}:${secs.toString().padStart(2, '0')}] ${text}`;
-    }
-    return text;
-  }).filter((t: string) => t.trim().length > 0);
-}
-
-// Create upload URL for a new asset
-async function createUpload(
-  parentAssetId: string,
-  fileName: string,
-  fileSize: number
-): Promise<{ assetId: string; uploadUrl: string }> {
-  const asset = await frameioRequest(`/assets/${parentAssetId}/children`, 'POST', {
-    name: fileName,
-    type: 'file',
-    filetype: 'video',
-    filesize: fileSize,
-  });
 
   return {
-    assetId: asset.id,
-    uploadUrl: asset.upload_url || asset.upload_urls?.[0],
+    accessToken: tokenData.access_token,
+    accountId: tokenData.account_id,
   };
 }
 
-// Get shareable link for an asset
-async function getShareLink(assetId: string): Promise<string> {
-  // Create a review link
+// Get projects from V4 API
+async function getV4Projects(accessToken: string): Promise<any[]> {
+  const allProjects: any[] = [];
+
   try {
-    const link = await frameioRequest(`/assets/${assetId}/review_links`, 'POST', {
-      allow_downloading: false,
-      allow_approving: true,
-      view_mode: 'single',
-    });
-    return link.short_url || `https://app.frame.io/player/${assetId}`;
-  } catch (e) {
-    // Fallback to player URL
-    return `https://app.frame.io/player/${assetId}`;
+    // Get user's accounts
+    const accountsResponse = await frameioV4Request(accessToken, '/accounts');
+    const accounts = accountsResponse.data || accountsResponse || [];
+    console.log('V4 accounts found:', accounts.length);
+
+    for (const account of accounts) {
+      try {
+        // Get workspaces for this account
+        const workspacesResponse = await frameioV4Request(
+          accessToken,
+          `/accounts/${account.id}/workspaces`
+        );
+        const workspaces = workspacesResponse.data || workspacesResponse || [];
+        console.log(`Account ${account.id} has ${workspaces.length} workspaces`);
+
+        for (const workspace of workspaces) {
+          try {
+            // Get projects in this workspace
+            const projectsResponse = await frameioV4Request(
+              accessToken,
+              `/accounts/${account.id}/workspaces/${workspace.id}/projects`
+            );
+            const projects = projectsResponse.data || projectsResponse || [];
+            console.log(`Workspace ${workspace.name} has ${projects.length} projects`);
+
+            allProjects.push(...projects.map((p: any) => ({
+              id: p.id,
+              name: p.name,
+              teamId: workspace.id,
+              teamName: workspace.name || 'Workspace',
+              rootAssetId: p.root_folder_id || p.root_asset_id,
+              accountId: account.id,
+            })));
+          } catch (projectError) {
+            console.error(`Failed to get projects for workspace ${workspace.id}:`, projectError);
+          }
+        }
+      } catch (wsError) {
+        console.error(`Failed to get workspaces for account ${account.id}:`, wsError);
+      }
+    }
+  } catch (accountError) {
+    console.error('Failed to get accounts:', accountError);
   }
+
+  return allProjects;
+}
+
+// Upload file to V4 (remote upload)
+async function uploadToV4(
+  accessToken: string,
+  accountId: string,
+  projectId: string,
+  fileName: string,
+  sourceUrl: string
+): Promise<{ assetId: string; shareLink: string }> {
+  // Get project to find root folder
+  const project = await frameioV4Request(accessToken, `/accounts/${accountId}/projects/${projectId}`);
+  const rootFolderId = project.root_folder_id || project.data?.root_folder_id;
+
+  if (!rootFolderId) {
+    throw new Error('Could not find project root folder');
+  }
+
+  console.log('Initiating remote upload to folder:', rootFolderId);
+
+  // Create remote upload
+  const uploadResponse = await frameioV4Request(
+    accessToken,
+    `/accounts/${accountId}/folders/${rootFolderId}/files/remote_upload`,
+    'POST',
+    {
+      data: {
+        name: fileName,
+        source_url: sourceUrl,
+      },
+    }
+  );
+
+  const assetId = uploadResponse.data?.id || uploadResponse.id;
+  console.log('Remote upload initiated, asset ID:', assetId);
+
+  // Create share link
+  let shareLink = `https://next.frame.io/project/${projectId}`;
+  try {
+    const shareResponse = await frameioV4Request(
+      accessToken,
+      `/accounts/${accountId}/projects/${projectId}/shares`,
+      'POST',
+      {
+        data: {
+          name: `Share: ${fileName}`,
+          expires_at: null,
+        },
+      }
+    );
+
+    if (shareResponse.data?.short_url) {
+      shareLink = shareResponse.data.short_url;
+    } else if (shareResponse.data?.id) {
+      // Attach asset to share
+      await frameioV4Request(
+        accessToken,
+        `/accounts/${accountId}/shares/${shareResponse.data.id}/assets`,
+        'POST',
+        { data: { asset_id: assetId } }
+      );
+      shareLink = shareResponse.data.short_url || `https://next.frame.io/share/${shareResponse.data.id}`;
+    }
+  } catch (shareError) {
+    console.error('Failed to create share link:', shareError);
+    // Use project link as fallback
+  }
+
+  return { assetId, shareLink };
 }
 
 Deno.serve(async (req) => {
@@ -314,14 +264,14 @@ Deno.serve(async (req) => {
 
     const token = authHeader.replace('Bearer ', '');
 
-    // Create Supabase client with user's JWT for auth validation
+    // Create Supabase client with user's JWT
     const userSupabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_ANON_KEY') ?? '',
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    // Validate user - MUST pass token explicitly when verify_jwt=false
+    // Validate user
     const { data: { user }, error: authError } = await userSupabase.auth.getUser(token);
     if (authError || !user) {
       return new Response(
@@ -330,12 +280,12 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Frame.io request from authenticated user: ${user.email}`);
+    console.log(`Frame.io request from: ${user.email}`);
 
     const body: FrameIORequest = await req.json();
     const { action } = body;
 
-    // Initialize service role client for database operations
+    // Service role client for token operations
     const serviceClient = createClient(
       Deno.env.get('SUPABASE_URL') || '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
@@ -346,8 +296,127 @@ Deno.serve(async (req) => {
     let result: unknown;
 
     switch (action) {
+      case 'get_auth_url': {
+        const clientId = Deno.env.get('FRAMEIO_CLIENT_ID');
+        if (!clientId) {
+          throw new Error('Frame.io OAuth not configured');
+        }
+
+        const redirectUri = body.redirectUri || `${Deno.env.get('SUPABASE_URL')}/functions/v1/frameio/callback`;
+        const state = crypto.randomUUID();
+        
+        const authUrl = new URL(ADOBE_IMS_AUTH_URL);
+        authUrl.searchParams.set('client_id', clientId);
+        authUrl.searchParams.set('redirect_uri', redirectUri);
+        authUrl.searchParams.set('scope', 'openid,AdobeID,frameio.assets,frameio.projects.read,frameio.projects.write');
+        authUrl.searchParams.set('response_type', 'code');
+        authUrl.searchParams.set('state', state);
+
+        result = { authUrl: authUrl.toString(), state };
+        break;
+      }
+
+      case 'exchange_code': {
+        if (!body.code || !body.redirectUri) {
+          throw new Error('code and redirectUri required');
+        }
+
+        const clientId = Deno.env.get('FRAMEIO_CLIENT_ID');
+        const clientSecret = Deno.env.get('FRAMEIO_CLIENT_SECRET');
+        
+        if (!clientId || !clientSecret) {
+          throw new Error('Frame.io OAuth not configured');
+        }
+
+        // Exchange code for tokens
+        const params = new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          client_secret: clientSecret,
+          code: body.code,
+          redirect_uri: body.redirectUri,
+        });
+
+        const tokenResponse = await fetch(ADOBE_IMS_TOKEN_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString(),
+        });
+
+        if (!tokenResponse.ok) {
+          const errorText = await tokenResponse.text();
+          console.error('Token exchange failed:', tokenResponse.status, errorText);
+          throw new Error(`Token exchange failed: ${errorText}`);
+        }
+
+        const tokenData = await tokenResponse.json();
+        console.log('Token exchange successful');
+
+        // Get user's Frame.io account info
+        const meResponse = await frameioV4Request(tokenData.access_token, '/me');
+        const accountId = meResponse.account_id || meResponse.data?.account_id;
+        
+        if (!accountId) {
+          // Try to get from accounts list
+          const accountsResponse = await frameioV4Request(tokenData.access_token, '/accounts');
+          const accounts = accountsResponse.data || accountsResponse || [];
+          if (accounts.length === 0) {
+            throw new Error('No Frame.io accounts found');
+          }
+          // Use first account
+          const firstAccountId = accounts[0].id;
+          
+          // Store tokens
+          const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
+          await serviceClient
+            .from('frameio_oauth_tokens')
+            .upsert({
+              user_id: user.id,
+              access_token: tokenData.access_token,
+              refresh_token: tokenData.refresh_token,
+              expires_at: expiresAt.toISOString(),
+              account_id: firstAccountId,
+            });
+
+          result = { connected: true, accountId: firstAccountId };
+        } else {
+          // Store tokens
+          const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
+          await serviceClient
+            .from('frameio_oauth_tokens')
+            .upsert({
+              user_id: user.id,
+              access_token: tokenData.access_token,
+              refresh_token: tokenData.refresh_token,
+              expires_at: expiresAt.toISOString(),
+              account_id: accountId,
+            });
+
+          result = { connected: true, accountId };
+        }
+        break;
+      }
+
+      case 'disconnect': {
+        await serviceClient
+          .from('frameio_oauth_tokens')
+          .delete()
+          .eq('user_id', user.id);
+        result = { disconnected: true };
+        break;
+      }
+
       case 'get_projects': {
-        result = await getProjects();
+        // Try V4 with user token first
+        const v4Token = await getV4AccessToken(serviceClient, user.id);
+        
+        if (v4Token) {
+          console.log('Using V4 OAuth token for projects');
+          result = await getV4Projects(v4Token.accessToken);
+        } else {
+          console.log('No V4 token available, returning empty (user needs to connect)');
+          result = [];
+        }
         break;
       }
 
@@ -355,9 +424,29 @@ Deno.serve(async (req) => {
         if (!body.frameioProjectId) {
           throw new Error('frameioProjectId required');
         }
-        // Get project to find root asset
-        const project = await frameioRequest(`/projects/${body.frameioProjectId}`);
-        result = await getAssets(project.root_asset_id);
+
+        const v4Token = await getV4AccessToken(serviceClient, user.id);
+        if (!v4Token) {
+          throw new Error('Frame.io not connected. Please connect your account.');
+        }
+
+        const project = await frameioV4Request(
+          v4Token.accessToken,
+          `/accounts/${v4Token.accountId}/projects/${body.frameioProjectId}`
+        );
+        const rootFolderId = project.root_folder_id || project.data?.root_folder_id;
+
+        const assetsResponse = await frameioV4Request(
+          v4Token.accessToken,
+          `/accounts/${v4Token.accountId}/folders/${rootFolderId}/assets`
+        );
+
+        result = (assetsResponse.data || assetsResponse || []).map((a: any) => ({
+          id: a.id,
+          name: a.name,
+          type: a.type,
+          createdAt: a.created_at,
+        }));
         break;
       }
 
@@ -365,7 +454,26 @@ Deno.serve(async (req) => {
         if (!body.assetId) {
           throw new Error('assetId required');
         }
-        result = await getFeedback(body.assetId);
+
+        const v4Token = await getV4AccessToken(serviceClient, user.id);
+        if (!v4Token) {
+          throw new Error('Frame.io not connected');
+        }
+
+        const commentsResponse = await frameioV4Request(
+          v4Token.accessToken,
+          `/accounts/${v4Token.accountId}/assets/${body.assetId}/comments`
+        );
+
+        result = (commentsResponse.data || commentsResponse || []).map((c: any) => {
+          let text = c.text || '';
+          if (c.timestamp) {
+            const mins = Math.floor(c.timestamp / 60);
+            const secs = Math.floor(c.timestamp % 60);
+            text = `[${mins}:${secs.toString().padStart(2, '0')}] ${text}`;
+          }
+          return text;
+        }).filter((t: string) => t.trim().length > 0);
         break;
       }
 
@@ -374,15 +482,24 @@ Deno.serve(async (req) => {
           throw new Error('frameioProjectId, fileName, and uploadId required');
         }
 
-        // Verify user has permission to upload (check if they own this upload record)
-        const { data: uploadRecord } = await serviceClient
+        const v4Token = await getV4AccessToken(serviceClient, user.id);
+        if (!v4Token) {
+          throw new Error('Frame.io not connected. Please connect your account first.');
+        }
+
+        // Get upload record with storage path
+        const { data: uploadRecord, error: uploadError } = await serviceClient
           .from('video_uploads')
-          .select('uploader_id')
+          .select('*')
           .eq('id', body.uploadId)
           .single();
 
-        if (uploadRecord?.uploader_id !== user.id) {
-          // Check if user is admin/producer
+        if (uploadError || !uploadRecord) {
+          throw new Error('Upload record not found');
+        }
+
+        // Verify permission
+        if (uploadRecord.uploader_id !== user.id) {
           const { data: roleData } = await userSupabase
             .from('user_roles')
             .select('role')
@@ -390,27 +507,31 @@ Deno.serve(async (req) => {
             .single();
 
           if (!roleData?.role || !['admin', 'producer'].includes(roleData.role)) {
-            return new Response(
-              JSON.stringify({ error: 'You do not have permission to upload to this record' }),
-              { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            );
+            throw new Error('You do not have permission to upload this record');
           }
         }
 
-        // Get project root asset
-        const project = await frameioRequest(`/projects/${body.frameioProjectId}`);
-        
-        // Create the asset
-        const { assetId, uploadUrl } = await createUpload(
-          project.root_asset_id,
+        // Create signed URL for the file
+        const { data: signedUrlData, error: signedUrlError } = await serviceClient.storage
+          .from('video-uploads')
+          .createSignedUrl(uploadRecord.storage_path, 3600); // 1 hour
+
+        if (signedUrlError || !signedUrlData?.signedUrl) {
+          throw new Error('Failed to create signed URL for video file');
+        }
+
+        console.log('Created signed URL for remote upload');
+
+        // Upload to Frame.io V4
+        const { assetId, shareLink } = await uploadToV4(
+          v4Token.accessToken,
+          v4Token.accountId,
+          body.frameioProjectId,
           body.fileName,
-          body.fileSize || 0
+          signedUrlData.signedUrl
         );
 
-        // Get share link
-        const shareLink = await getShareLink(assetId);
-
-        // Update the video upload record
+        // Update records
         await serviceClient
           .from('video_uploads')
           .update({
@@ -422,7 +543,6 @@ Deno.serve(async (req) => {
           })
           .eq('id', body.uploadId);
 
-        // Also update the project record
         if (body.projectId) {
           await serviceClient
             .from('projects')
@@ -435,9 +555,8 @@ Deno.serve(async (req) => {
 
         result = {
           assetId,
-          uploadUrl,
           shareLink,
-          message: 'Upload created successfully',
+          message: 'Upload initiated successfully (remote upload)',
         };
         break;
       }

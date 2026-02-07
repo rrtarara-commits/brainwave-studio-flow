@@ -14,6 +14,7 @@ import TimeLogger from "./pages/TimeLogger";
 import AIBrain from "./pages/AIBrain";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import FrameIOCallback from "./pages/FrameIOCallback";
 
 const queryClient = new QueryClient();
 
@@ -27,6 +28,16 @@ const App = () => (
           <Routes>
             {/* Public routes */}
             <Route path="/login" element={<Login />} />
+            
+            {/* OAuth callback routes */}
+            <Route
+              path="/integrations/frameio/callback"
+              element={
+                <ProtectedRoute>
+                  <FrameIOCallback />
+                </ProtectedRoute>
+              }
+            />
             
             {/* Redirect root to dashboard */}
             <Route path="/" element={<Navigate to="/dashboard" replace />} />

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { useFrameIOAuth } from './useFrameIOAuth';
 
 export interface FrameIOProject {
   id: string;
@@ -7,14 +8,22 @@ export interface FrameIOProject {
   teamId: string;
   teamName: string;
   rootAssetId: string;
+  accountId?: string;
 }
 
 export function useFrameIO() {
   const [projects, setProjects] = useState<FrameIOProject[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  const { isConnected, isLoading: authLoading, isConnecting, connect, disconnect, refresh: refreshAuth } = useFrameIOAuth();
 
-  const fetchProjects = async () => {
+  const fetchProjects = useCallback(async () => {
+    if (!isConnected) {
+      setProjects([]);
+      return;
+    }
+
     setIsLoading(true);
     setError(null);
 
@@ -26,17 +35,18 @@ export function useFrameIO() {
       if (fnError) throw fnError;
 
       if (data?.success) {
-        setProjects(data.data);
+        setProjects(data.data || []);
       } else {
         throw new Error(data?.error || 'Failed to fetch Frame.io projects');
       }
     } catch (err) {
       console.error('Frame.io fetch error:', err);
       setError(err instanceof Error ? err.message : 'Failed to connect to Frame.io');
+      setProjects([]);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isConnected]);
 
   const fetchFeedback = async (assetId: string): Promise<string[]> => {
     try {
@@ -74,16 +84,24 @@ export function useFrameIO() {
     }
   };
 
+  // Fetch projects when connected
   useEffect(() => {
-    fetchProjects();
-  }, []);
+    if (isConnected && !authLoading) {
+      fetchProjects();
+    }
+  }, [isConnected, authLoading, fetchProjects]);
 
   return {
     projects,
-    isLoading,
+    isLoading: isLoading || authLoading,
     error,
+    isConnected,
+    isConnecting,
+    connect,
+    disconnect,
     fetchProjects,
     fetchFeedback,
     fetchAssets,
+    refreshAuth,
   };
 }
