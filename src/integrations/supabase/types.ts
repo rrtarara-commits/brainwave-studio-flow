@@ -449,8 +449,10 @@ export type Database = {
       video_uploads: {
         Row: {
           analyzed_at: string | null
+          audio_analysis: Json | null
           completed_at: string | null
           created_at: string
+          deep_analysis_status: string | null
           dismissed_flags: string[] | null
           file_name: string
           file_size: number | null
@@ -462,16 +464,21 @@ export type Database = {
           project_id: string
           qc_passed: boolean | null
           qc_result: Json | null
+          signed_url: string | null
+          signed_url_expires_at: string | null
           status: string
           storage_path: string | null
           submitted_at: string | null
           updated_at: string
           uploader_id: string
+          visual_analysis: Json | null
         }
         Insert: {
           analyzed_at?: string | null
+          audio_analysis?: Json | null
           completed_at?: string | null
           created_at?: string
+          deep_analysis_status?: string | null
           dismissed_flags?: string[] | null
           file_name: string
           file_size?: number | null
@@ -483,16 +490,21 @@ export type Database = {
           project_id: string
           qc_passed?: boolean | null
           qc_result?: Json | null
+          signed_url?: string | null
+          signed_url_expires_at?: string | null
           status?: string
           storage_path?: string | null
           submitted_at?: string | null
           updated_at?: string
           uploader_id: string
+          visual_analysis?: Json | null
         }
         Update: {
           analyzed_at?: string | null
+          audio_analysis?: Json | null
           completed_at?: string | null
           created_at?: string
+          deep_analysis_status?: string | null
           dismissed_flags?: string[] | null
           file_name?: string
           file_size?: number | null
@@ -504,11 +516,14 @@ export type Database = {
           project_id?: string
           qc_passed?: boolean | null
           qc_result?: Json | null
+          signed_url?: string | null
+          signed_url_expires_at?: string | null
           status?: string
           storage_path?: string | null
           submitted_at?: string | null
           updated_at?: string
           uploader_id?: string
+          visual_analysis?: Json | null
         }
         Relationships: [
           {

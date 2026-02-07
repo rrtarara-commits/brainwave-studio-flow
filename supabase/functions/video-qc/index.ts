@@ -345,7 +345,7 @@ Deno.serve(async (req) => {
       },
     };
 
-    // Update the upload record
+    // Update the upload record and queue for deep analysis
     await serviceClient
       .from('video_uploads')
       .update({
@@ -353,6 +353,7 @@ Deno.serve(async (req) => {
         qc_result: result,
         qc_passed: passed,
         analyzed_at: new Date().toISOString(),
+        deep_analysis_status: 'pending', // Queue for TrueNAS deep analysis
       })
       .eq('id', uploadId);
 

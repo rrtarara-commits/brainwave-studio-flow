@@ -1,41 +1,40 @@
+## TrueNAS Deep Analysis Integration
 
+### Architecture
+The deep analysis system uses an outbound polling architecture to bypass Edge Function memory constraints:
 
-## Fix Frame.io OAuth 400 Error
+1. **Video Upload Flow**: When a video is uploaded and passes initial QC, it's marked with `deep_analysis_status: 'pending'`
+2. **TrueNAS Polling**: The TrueNAS server polls `deep-analysis-poll` endpoint every minute
+3. **Video Download**: TrueNAS downloads videos via signed URLs, processes with FFmpeg + Gemini Vision
+4. **Results Callback**: Analysis results are POSTed to `deep-analysis-callback` endpoint
 
-### Problem
-The Frame.io integration is failing with `Failed to get OAuth token: 400` because:
-1. Your Adobe Developer Console only offers interactive OAuth types (Web App, SPA, Native App)
-2. These don't support the `client_credentials` grant required for server-to-server automation
-3. The current code only falls back to the developer token when OAuth credentials are **missing**, not when they **fail**
+### Edge Functions
 
-### Solution
-Modify the edge function to gracefully fall back to the developer token when OAuth fails (not just when credentials are missing).
+- `deep-analysis-poll`: Returns pending uploads with signed URLs (authenticated via `TRUENAS_CALLBACK_SECRET`)
+- `deep-analysis-callback`: Receives analysis results and merges into QC flags
 
-### Technical Changes
+### Database Columns (video_uploads)
 
-**1. Update `supabase/functions/frameio/index.ts`**
+- `deep_analysis_status`: 'none' | 'pending' | 'processing' | 'completed' | 'failed'
+- `visual_analysis`: JSON with frames analyzed, detected issues
+- `audio_analysis`: JSON with dialogue levels, peak detection, issues
+- `signed_url` / `signed_url_expires_at`: Temporary download URLs
 
-Modify the `getOAuthToken()` function to catch OAuth failures and fall back to the developer token:
+### TrueNAS Docker Setup
 
-```text
-Current logic:
-  IF no client_id/secret → use dev token
-  ELSE → try OAuth (fails with 400)
+Create a Python container that:
+1. Polls `/functions/v1/deep-analysis-poll` with header `x-truenas-secret: YOUR_SECRET`
+2. Downloads videos via signed URLs
+3. Runs FFmpeg for frame extraction + audio analysis
+4. Calls Gemini Vision API for visual QC (glitches, artifacts, black frames)
+5. POSTs results to `/functions/v1/deep-analysis-callback`
 
-New logic:
-  IF no client_id/secret → use dev token
-  ELSE → try OAuth
-    IF OAuth fails → try dev token as fallback
-    IF no fallback → throw error
+### Environment Variables for TrueNAS Container
+
 ```
-
-The key change wraps the OAuth attempt in try/catch and falls back to `FRAMEIO_API_TOKEN` if OAuth fails for any reason.
-
-### Files to Modify
-- `supabase/functions/frameio/index.ts` - Update authentication fallback logic
-
-### Alternative Consideration
-If you want to stop using OAuth entirely and just use the developer token, you could also remove the `FRAMEIO_CLIENT_ID` and `FRAMEIO_CLIENT_SECRET` secrets. But implementing the fallback is safer because:
-- It preserves the option to use OAuth later if you get Server-to-Server credentials
-- It handles transient OAuth failures gracefully
+SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co
+TRUENAS_CALLBACK_SECRET=your_secret_here
+GEMINI_API_KEY=your_gemini_key
+POLL_INTERVAL=60
+```
 
