@@ -29,15 +29,8 @@ const App = () => (
             {/* Public routes */}
             <Route path="/login" element={<Login />} />
             
-            {/* OAuth callback routes */}
-            <Route
-              path="/integrations/frameio/callback"
-              element={
-                <ProtectedRoute>
-                  <FrameIOCallback />
-                </ProtectedRoute>
-              }
-            />
+            {/* OAuth callback routes - NOT protected to allow redirect from external OAuth */}
+            <Route path="/integrations/frameio/callback" element={<FrameIOCallback />} />
             
             {/* Redirect root to dashboard */}
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
