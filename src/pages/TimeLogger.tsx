@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { Project, WorkLog, Expense, TASK_TYPES, TaskType } from '@/lib/types';
+import { workLogSchema, expenseSchema } from '@/lib/validation';
+import { z } from 'zod';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -81,30 +83,34 @@ export default function TimeLogger() {
 
   const handleTimeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProject || !hours || selectedTasks.length === 0) {
-      toast({
-        variant: 'destructive',
-        title: 'Missing fields',
-        description: 'Please fill in all required fields',
-      });
-      return;
-    }
-
-    setIsSubmitting(true);
+    
     try {
-      const { error } = await supabase.from('work_logs').insert({
+      // Parse hours safely
+      const parsedHours = parseFloat(hours);
+      
+      // Validate with Zod schema
+      const validated = workLogSchema.parse({
         project_id: selectedProject,
-        user_id: user?.id,
-        hours: parseFloat(hours),
+        hours: isNaN(parsedHours) ? undefined : parsedHours,
         task_type: selectedTasks,
         notes: notes || null,
+      });
+
+      setIsSubmitting(true);
+
+      const { error } = await supabase.from('work_logs').insert({
+        project_id: validated.project_id,
+        hours: validated.hours,
+        task_type: validated.task_type,
+        notes: validated.notes ?? null,
+        user_id: user?.id ?? '',
       });
 
       if (error) throw error;
 
       toast({
         title: 'Time logged',
-        description: `${hours} hours recorded successfully`,
+        description: `${validated.hours} hours recorded successfully`,
       });
 
       // Reset form
@@ -113,6 +119,14 @@ export default function TimeLogger() {
       setNotes('');
       fetchData();
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        toast({
+          variant: 'destructive',
+          title: 'Validation Error',
+          description: error.errors[0].message,
+        });
+        return;
+      }
       console.error('Error logging time:', error);
       toast({
         variant: 'destructive',
@@ -126,30 +140,34 @@ export default function TimeLogger() {
 
   const handleExpenseSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!expenseProject || !expenseDescription || !expenseAmount) {
-      toast({
-        variant: 'destructive',
-        title: 'Missing fields',
-        description: 'Please fill in all required fields',
-      });
-      return;
-    }
-
-    setIsSubmitting(true);
+    
     try {
-      const { error } = await supabase.from('expenses').insert({
+      // Parse amount safely
+      const parsedAmount = parseFloat(expenseAmount);
+      
+      // Validate with Zod schema
+      const validated = expenseSchema.parse({
         project_id: expenseProject,
-        user_id: user?.id,
         description: expenseDescription,
-        amount: parseFloat(expenseAmount),
+        amount: isNaN(parsedAmount) ? undefined : parsedAmount,
         receipt_skipped: skipReceipt,
+      });
+
+      setIsSubmitting(true);
+
+      const { error } = await supabase.from('expenses').insert({
+        project_id: validated.project_id,
+        description: validated.description,
+        amount: validated.amount,
+        receipt_skipped: validated.receipt_skipped,
+        user_id: user?.id ?? '',
       });
 
       if (error) throw error;
 
       toast({
         title: 'Expense logged',
-        description: `$${expenseAmount} recorded successfully`,
+        description: `$${validated.amount.toFixed(2)} recorded successfully`,
       });
 
       // Reset form
@@ -158,6 +176,14 @@ export default function TimeLogger() {
       setSkipReceipt(false);
       fetchData();
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        toast({
+          variant: 'destructive',
+          title: 'Validation Error',
+          description: error.errors[0].message,
+        });
+        return;
+      }
       console.error('Error logging expense:', error);
       toast({
         variant: 'destructive',

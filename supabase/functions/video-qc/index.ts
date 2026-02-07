@@ -36,14 +36,9 @@ interface QCResult {
   };
 }
 
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL') || '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-);
-
-// Fetch QC standards for studio and specific client
-async function getQCStandards(clientName?: string): Promise<any[]> {
-  const { data: studioStandards } = await supabase
+// Fetch QC standards for studio and specific client (uses service role client)
+async function getQCStandards(serviceClient: any, clientName?: string): Promise<any[]> {
+  const { data: studioStandards } = await serviceClient
     .from('qc_standards')
     .select('*')
     .eq('category', 'studio')
@@ -51,7 +46,7 @@ async function getQCStandards(clientName?: string): Promise<any[]> {
 
   let clientStandards: any[] = [];
   if (clientName) {
-    const { data } = await supabase
+    const { data } = await serviceClient
       .from('qc_standards')
       .select('*')
       .eq('category', 'client')
@@ -233,11 +228,27 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Auth check
+    // Authentication check
     const authHeader = req.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
+        JSON.stringify({ error: 'Missing authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Create Supabase client with user's JWT for auth validation
+    const userSupabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    // Validate user
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid or expired token' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -245,16 +256,46 @@ Deno.serve(async (req) => {
     const body: QCRequest = await req.json();
     const { uploadId, projectId, fileName, storagePath, clientName, frameioFeedback } = body;
 
-    console.log(`Starting QC analysis for upload ${uploadId}, file: ${fileName}`);
+    // Verify the user is the uploader or has permission (admin/producer)
+    const { data: roleData } = await userSupabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    // Initialize service role client for database operations
+    const serviceClient = createClient(
+      Deno.env.get('SUPABASE_URL') || '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    );
+
+    // Check if user owns this upload or is admin/producer
+    const { data: upload } = await serviceClient
+      .from('video_uploads')
+      .select('uploader_id')
+      .eq('id', uploadId)
+      .single();
+
+    const isOwner = upload?.uploader_id === user.id;
+    const hasRole = roleData?.role && ['admin', 'producer'].includes(roleData.role);
+
+    if (!isOwner && !hasRole) {
+      return new Response(
+        JSON.stringify({ error: 'You do not have permission to QC this upload' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Starting QC analysis for upload ${uploadId}, file: ${fileName}, user: ${user.email}`);
 
     // Update status to analyzing
-    await supabase
+    await serviceClient
       .from('video_uploads')
       .update({ status: 'analyzing' })
       .eq('id', uploadId);
 
     // Get QC standards
-    const standards = await getQCStandards(clientName);
+    const standards = await getQCStandards(serviceClient, clientName);
     console.log(`Loaded ${standards.length} QC standards`);
 
     // Extract metadata
@@ -283,7 +324,7 @@ Deno.serve(async (req) => {
     };
 
     // Update the upload record
-    await supabase
+    await serviceClient
       .from('video_uploads')
       .update({
         status: 'reviewed',
