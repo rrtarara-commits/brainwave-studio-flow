@@ -45,7 +45,26 @@ export function useFrameIOAuth() {
     checkConnection();
   }, [checkConnection]);
 
-  // Start OAuth flow
+  // Listen for message from popup when auth completes
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      
+      if (event.data?.type === 'frameio_auth_complete') {
+        setIsConnecting(false);
+        checkConnection();
+        toast({
+          title: 'Connected!',
+          description: 'Your Frame.io account is now connected.',
+        });
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [checkConnection, toast]);
+
+  // Start OAuth flow - opens in popup to avoid iframe restrictions
   const connect = useCallback(async (returnPath?: string) => {
     setIsConnecting(true);
     
@@ -65,8 +84,38 @@ export function useFrameIOAuth() {
         if (returnPath) {
           sessionStorage.setItem('frameio_return_path', returnPath);
         }
-        // Redirect to Adobe login
-        window.location.href = data.data.authUrl;
+        
+        // Open in popup window - Adobe IMS blocks iframe embedding
+        const width = 600;
+        const height = 700;
+        const left = window.screenX + (window.outerWidth - width) / 2;
+        const top = window.screenY + (window.outerHeight - height) / 2;
+        
+        const popup = window.open(
+          data.data.authUrl,
+          'frameio_oauth',
+          `width=${width},height=${height},left=${left},top=${top},popup=1`
+        );
+        
+        if (!popup) {
+          throw new Error('Popup blocked. Please allow popups for this site.');
+        }
+        
+        // Poll to detect when popup closes or redirects back
+        const pollTimer = setInterval(() => {
+          try {
+            // Check if popup was closed
+            if (popup.closed) {
+              clearInterval(pollTimer);
+              setIsConnecting(false);
+              // Refresh connection status in case auth completed
+              checkConnection();
+            }
+          } catch (e) {
+            // Cross-origin error means we're still on Adobe's domain
+          }
+        }, 500);
+        
       } else {
         throw new Error(data?.error || 'Failed to get authorization URL');
       }
@@ -79,7 +128,7 @@ export function useFrameIOAuth() {
       });
       setIsConnecting(false);
     }
-  }, [toast]);
+  }, [toast, checkConnection]);
 
   // Disconnect Frame.io
   const disconnect = useCallback(async () => {
