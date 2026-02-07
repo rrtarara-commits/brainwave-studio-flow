@@ -111,12 +111,12 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+    <div className="flex min-h-screen items-center justify-center bg-secondary p-4">
       {/* Background glow effect */}
       <div 
         className="absolute inset-0 overflow-hidden pointer-events-none"
         style={{
-          background: 'radial-gradient(ellipse at 50% 0%, hsl(357 83% 47% / 0.1), transparent 50%)',
+          background: 'radial-gradient(ellipse at 50% 0%, hsl(217 100% 50% / 0.08), transparent 50%)',
         }}
       />
 
