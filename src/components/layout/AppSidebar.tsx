@@ -36,9 +36,9 @@ const navItems: NavItem[] = [
   { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { title: 'Projects', href: '/projects', icon: FolderKanban },
   { title: 'Time Logger', href: '/time-logger', icon: Clock },
+  { title: 'AI Brain', href: '/ai-brain', icon: Brain },
   { title: 'Crew Scout', href: '/crew-scout', icon: Users, adminOnly: true },
   { title: 'Resources', href: '/resources', icon: FileVideo, requiresResourceAccess: true },
-  { title: 'AI Debug', href: '/ai-debug', icon: Brain, adminOnly: true },
   { title: 'Settings', href: '/settings', icon: Settings, adminOnly: true },
 ];
 

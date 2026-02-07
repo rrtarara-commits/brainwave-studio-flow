@@ -11,6 +11,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import TimeLogger from "./pages/TimeLogger";
+import AIBrain from "./pages/AIBrain";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -60,6 +61,14 @@ const App = () => (
               element={
                 <ProtectedRoute>
                   <TimeLogger />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/ai-brain"
+              element={
+                <ProtectedRoute>
+                  <AIBrain />
                 </ProtectedRoute>
               }
             />
