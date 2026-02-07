@@ -51,30 +51,85 @@ async function frameioRequest(
   return response.json();
 }
 
-// Get list of Frame.io projects (teams/projects)
+// Get list of Frame.io projects (handles both team and personal accounts)
 async function getProjects(): Promise<any> {
   // Get the authenticated user's account
   const me = await frameioRequest('/me');
   console.log('Frame.io user:', me.email);
+  console.log('Frame.io account ID:', me.account_id);
   
-  // Get teams
-  const teams = await frameioRequest('/teams');
-  
-  // Get projects from each team
   const allProjects: any[] = [];
-  for (const team of teams) {
+
+  // Try getting projects via accounts (works for personal/free accounts)
+  try {
+    const accounts = await frameioRequest('/accounts');
+    console.log('Found accounts:', accounts.length);
+    
+    for (const account of accounts) {
+      try {
+        // Get projects directly from account
+        const projects = await frameioRequest(`/accounts/${account.id}/projects`);
+        console.log(`Account ${account.id} has ${projects.length} projects`);
+        
+        allProjects.push(...projects.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          teamId: account.id,
+          teamName: account.name || 'Personal',
+          rootAssetId: p.root_asset_id,
+        })));
+      } catch (e) {
+        console.error(`Failed to get projects for account ${account.id}:`, e);
+      }
+    }
+  } catch (accountError) {
+    console.log('Accounts endpoint failed, trying teams:', accountError);
+    
+    // Fallback to teams endpoint (for team accounts)
     try {
-      const projects = await frameioRequest(`/teams/${team.id}/projects`);
+      const teams = await frameioRequest('/teams');
+      console.log('Found teams:', teams.length);
+      
+      for (const team of teams) {
+        try {
+          const projects = await frameioRequest(`/teams/${team.id}/projects`);
+          allProjects.push(...projects.map((p: any) => ({
+            id: p.id,
+            name: p.name,
+            teamId: team.id,
+            teamName: team.name,
+            rootAssetId: p.root_asset_id,
+          })));
+        } catch (e) {
+          console.error(`Failed to get projects for team ${team.id}:`, e);
+        }
+      }
+    } catch (teamError) {
+      console.error('Teams endpoint also failed:', teamError);
+    }
+  }
+
+  // If still no projects, try getting user's own projects directly
+  if (allProjects.length === 0 && me.account_id) {
+    try {
+      console.log('Trying direct account projects fetch...');
+      const projects = await frameioRequest(`/accounts/${me.account_id}/projects`);
       allProjects.push(...projects.map((p: any) => ({
         id: p.id,
         name: p.name,
-        teamId: team.id,
-        teamName: team.name,
+        teamId: me.account_id,
+        teamName: 'My Projects',
         rootAssetId: p.root_asset_id,
       })));
     } catch (e) {
-      console.error(`Failed to get projects for team ${team.id}:`, e);
+      console.error('Direct account projects fetch failed:', e);
     }
+  }
+
+  console.log('Total projects found:', allProjects.length);
+  
+  if (allProjects.length === 0) {
+    console.log('No projects found. This may be due to Frame.io free tier limitations or no projects created yet.');
   }
   
   return allProjects;
