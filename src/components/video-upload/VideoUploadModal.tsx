@@ -261,7 +261,10 @@ export function VideoUploadModal({
                   />
                   <p className="text-xs text-muted-foreground">
                     {loadingProjects ? 'Loading projects...' : 
-                      'No projects found via API. Enter the Project ID manually (find it in your Frame.io project URL).'}
+                      'Your Frame.io account uses the newer V4 platform. Enter your Project ID manually.'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    <strong>How to find it:</strong> Open your project in Frame.io → Copy the ID from the URL after <code className="bg-muted px-1 rounded">/projects/</code>
                   </p>
                 </div>
               )}
