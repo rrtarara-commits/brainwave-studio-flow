@@ -20,9 +20,8 @@ interface QCFlag {
   category: string;
   title: string;
   description: string;
-  source: 'metadata' | 'qc_standard' | 'frameio_feedback' | 'ai_analysis' | 'visual_analysis' | 'audio_analysis';
+  source: 'metadata' | 'qc_standard' | 'frameio_feedback' | 'ai_analysis';
   ruleId?: string;
-  timestamp?: string;
 }
 
 interface QCResult {
@@ -36,10 +35,11 @@ interface QCResult {
     aiModel: string;
     visualFramesAnalyzed: number;
     audioAnalyzed: boolean;
+    note?: string;
   };
 }
 
-// Fetch QC standards for studio and specific client (uses service role client)
+// Fetch QC standards for studio and specific client
 async function getQCStandards(serviceClient: any, clientName?: string): Promise<any[]> {
   const { data: studioStandards } = await serviceClient
     .from('qc_standards')
@@ -61,17 +61,22 @@ async function getQCStandards(serviceClient: any, clientName?: string): Promise<
   return [...(studioStandards || []), ...clientStandards];
 }
 
-// Extract metadata from file
-function extractMetadata(fileName: string): Record<string, unknown> {
+// Extract metadata from filename
+function extractMetadata(fileName: string, fileSize?: number): Record<string, unknown> {
   const extension = fileName.split('.').pop()?.toLowerCase();
   const hasResolutionHint = fileName.match(/(\d{3,4})x(\d{3,4})/i) || 
                             fileName.match(/(4k|1080p|720p|2160p)/i);
+  const hasVersionHint = fileName.match(/(v\d+|_v\d+|version\s*\d+|rev\d+|r\d+)/i);
+  const hasFinalHint = fileName.toLowerCase().includes('final');
   
   return {
     fileName,
     extension,
     format: extension,
+    fileSize,
     hasResolutionHint: !!hasResolutionHint,
+    hasVersionIndicator: !!hasVersionHint,
+    markedAsFinal: hasFinalHint,
     extractedAt: new Date().toISOString(),
   };
 }
@@ -85,6 +90,7 @@ function checkMetadataRules(metadata: Record<string, unknown>, standards: any[])
   for (const standard of metadataStandards) {
     const config = standard.rule_config;
     
+    // Check file format
     if (config.allowed_formats) {
       const ext = metadata.extension as string;
       if (!config.allowed_formats.includes(ext)) {
@@ -100,6 +106,7 @@ function checkMetadataRules(metadata: Record<string, unknown>, standards: any[])
       }
     }
 
+    // Check naming convention
     if (config.naming_pattern) {
       const regex = new RegExp(config.naming_pattern);
       if (!regex.test(metadata.fileName as string)) {
@@ -119,294 +126,10 @@ function checkMetadataRules(metadata: Record<string, unknown>, standards: any[])
   return flags;
 }
 
-// Analyze video visually using AI vision model
-async function analyzeVideoVisually(
-  serviceClient: any,
-  storagePath: string,
-  fileName: string
-): Promise<{ flags: QCFlag[]; framesAnalyzed: number }> {
-  const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-  if (!LOVABLE_API_KEY) {
-    console.log('LOVABLE_API_KEY not configured, skipping visual analysis');
-    return { flags: [], framesAnalyzed: 0 };
-  }
-
-  const flags: QCFlag[] = [];
-  
-  try {
-    // Get the video file from storage
-    const { data: fileData, error: downloadError } = await serviceClient.storage
-      .from('video-uploads')
-      .download(storagePath);
-
-    if (downloadError || !fileData) {
-      console.error('Failed to download video for visual analysis:', downloadError);
-      return { flags: [], framesAnalyzed: 0 };
-    }
-
-    // Convert file to base64 for AI analysis
-    const arrayBuffer = await fileData.arrayBuffer();
-    const base64Video = btoa(
-      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-    );
-    
-    // Use Gemini vision to analyze the video
-    const prompt = `You are a professional video QC specialist for a post-production studio. Analyze this video file and identify any visual quality issues.
-
-Look for:
-1. **Visual Glitches**: Artifacts, compression issues, frame drops, stuttering, black frames, flash frames
-2. **Color Issues**: Inconsistent color grading, banding, clipping in highlights or shadows, unintended color shifts
-3. **Composition Problems**: Jump cuts, misaligned graphics, text cut off at edges, wrong aspect ratio bars
-4. **Motion Issues**: Unintended camera shake, jittery motion, speed ramp errors
-5. **Overlay/Graphics Issues**: Missing elements, wrong positioning, timing errors with lower thirds
-6. **General Quality**: Soft/out of focus footage, noise/grain issues, interlacing artifacts
-
-For each issue found, respond in this exact JSON format:
-{
-  "issues": [
-    {
-      "category": "Visual Glitch | Color | Composition | Motion | Graphics | Quality",
-      "title": "Brief issue title",
-      "description": "Detailed description of what's wrong and where (timestamp if visible)",
-      "severity": "error | warning | info",
-      "timestamp": "approximate timecode if identifiable"
-    }
-  ],
-  "overallQuality": "good | acceptable | needs_review | poor",
-  "summary": "One sentence overall assessment"
-}
-
-If the video looks professionally produced with no issues, return: {"issues": [], "overallQuality": "good", "summary": "Video appears professionally produced with no visual issues detected."}
-
-Respond ONLY with valid JSON.`;
-
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'system', content: 'You are a video QC specialist. Respond only with valid JSON.' },
-          { 
-            role: 'user', 
-            content: [
-              { type: 'text', text: prompt },
-              { 
-                type: 'image_url', 
-                image_url: { 
-                  url: `data:video/${fileName.split('.').pop()};base64,${base64Video}` 
-                } 
-              }
-            ]
-          },
-        ],
-        max_tokens: 2000,
-        temperature: 0.2,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error('Visual analysis API error:', response.status);
-      return { flags: [], framesAnalyzed: 0 };
-    }
-
-    const aiResponse = await response.json();
-    const content = aiResponse.choices?.[0]?.message?.content || '';
-    
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.issues && Array.isArray(parsed.issues)) {
-          for (const issue of parsed.issues) {
-            flags.push({
-              id: `visual_${crypto.randomUUID().slice(0, 8)}`,
-              type: issue.severity || 'warning',
-              category: issue.category || 'Visual',
-              title: issue.title,
-              description: issue.description,
-              source: 'visual_analysis',
-              timestamp: issue.timestamp,
-            });
-          }
-        }
-      }
-    } catch (parseError) {
-      console.error('Failed to parse visual analysis response:', parseError);
-    }
-
-    return { flags, framesAnalyzed: 1 };
-  } catch (error) {
-    console.error('Visual analysis error:', error);
-    return { flags: [], framesAnalyzed: 0 };
-  }
-}
-
-// Analyze audio levels and voice consistency
-async function analyzeAudioLevels(
-  serviceClient: any,
-  storagePath: string,
-  fileName: string
-): Promise<{ flags: QCFlag[]; analyzed: boolean }> {
-  const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-  if (!LOVABLE_API_KEY) {
-    console.log('LOVABLE_API_KEY not configured, skipping audio analysis');
-    return { flags: [], analyzed: false };
-  }
-
-  const flags: QCFlag[] = [];
-  
-  try {
-    // Get the video file from storage
-    const { data: fileData, error: downloadError } = await serviceClient.storage
-      .from('video-uploads')
-      .download(storagePath);
-
-    if (downloadError || !fileData) {
-      console.error('Failed to download video for audio analysis:', downloadError);
-      return { flags: [], analyzed: false };
-    }
-
-    // Convert file to base64 for AI analysis
-    const arrayBuffer = await fileData.arrayBuffer();
-    const base64Video = btoa(
-      new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-    );
-
-    const prompt = `You are a professional audio engineer reviewing video content for a post-production studio. Analyze the audio in this video.
-
-Check for:
-1. **Voice/Dialogue Levels**: Voice should be clearly audible and consistent, ideally averaging around -12dB to -6dB for broadcast (-3dB peaks are acceptable). Flag if voice is too quiet, too loud, or inconsistent.
-2. **Audio Clipping**: Any distortion from levels exceeding 0dB
-3. **Level Consistency**: Sudden jumps in volume, inconsistent levels between cuts
-4. **Background Audio**: Music or ambience too loud compared to dialogue
-5. **Audio Sync**: Any noticeable lip-sync issues
-6. **Noise Issues**: Hiss, hum, pops, clicks, or room tone inconsistencies
-7. **Mix Balance**: Overall mix should be broadcast-ready with proper headroom
-
-Target specs:
-- Dialogue/Voice: averaging -12dB to -6dB (peaks around -3dB)
-- Music: -18dB to -12dB (under dialogue)
-- Overall loudness: -24 LUFS to -16 LUFS for broadcast
-
-Respond in this exact JSON format:
-{
-  "issues": [
-    {
-      "category": "Voice Levels | Clipping | Consistency | Mix Balance | Sync | Noise",
-      "title": "Brief issue title",
-      "description": "Detailed description of the audio issue",
-      "severity": "error | warning | info",
-      "timestamp": "approximate timecode if identifiable"
-    }
-  ],
-  "voiceLevelAssessment": "good | too_quiet | too_loud | inconsistent",
-  "estimatedPeakLevel": "-XdB approximate",
-  "overallAudioQuality": "broadcast_ready | needs_adjustment | needs_remix",
-  "summary": "One sentence assessment of audio quality"
-}
-
-If audio quality is professional with proper levels, return: {"issues": [], "voiceLevelAssessment": "good", "estimatedPeakLevel": "-3dB to -6dB", "overallAudioQuality": "broadcast_ready", "summary": "Audio levels are well-balanced and broadcast-ready."}
-
-Respond ONLY with valid JSON.`;
-
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          { role: 'system', content: 'You are an audio engineer. Respond only with valid JSON.' },
-          { 
-            role: 'user', 
-            content: [
-              { type: 'text', text: prompt },
-              { 
-                type: 'image_url', 
-                image_url: { 
-                  url: `data:video/${fileName.split('.').pop()};base64,${base64Video}` 
-                } 
-              }
-            ]
-          },
-        ],
-        max_tokens: 2000,
-        temperature: 0.2,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error('Audio analysis API error:', response.status);
-      return { flags: [], analyzed: false };
-    }
-
-    const aiResponse = await response.json();
-    const content = aiResponse.choices?.[0]?.message?.content || '';
-    
-    try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        
-        // Add voice level assessment as info if not ideal
-        if (parsed.voiceLevelAssessment && parsed.voiceLevelAssessment !== 'good') {
-          flags.push({
-            id: `audio_voice_level`,
-            type: parsed.voiceLevelAssessment === 'inconsistent' ? 'warning' : 'info',
-            category: 'Voice Levels',
-            title: `Voice levels are ${parsed.voiceLevelAssessment}`,
-            description: `Expected: -12dB to -6dB average with peaks around -3dB. ${parsed.summary || ''}`,
-            source: 'audio_analysis',
-          });
-        }
-
-        // Add overall quality warning if not broadcast ready
-        if (parsed.overallAudioQuality && parsed.overallAudioQuality !== 'broadcast_ready') {
-          flags.push({
-            id: `audio_quality_overall`,
-            type: parsed.overallAudioQuality === 'needs_remix' ? 'error' : 'warning',
-            category: 'Audio Quality',
-            title: `Audio ${parsed.overallAudioQuality === 'needs_remix' ? 'needs remix' : 'needs adjustment'}`,
-            description: parsed.summary || 'Audio levels may need adjustment before delivery.',
-            source: 'audio_analysis',
-          });
-        }
-
-        // Add specific issues
-        if (parsed.issues && Array.isArray(parsed.issues)) {
-          for (const issue of parsed.issues) {
-            flags.push({
-              id: `audio_${crypto.randomUUID().slice(0, 8)}`,
-              type: issue.severity || 'warning',
-              category: issue.category || 'Audio',
-              title: issue.title,
-              description: issue.description,
-              source: 'audio_analysis',
-              timestamp: issue.timestamp,
-            });
-          }
-        }
-      }
-    } catch (parseError) {
-      console.error('Failed to parse audio analysis response:', parseError);
-    }
-
-    return { flags, analyzed: true };
-  } catch (error) {
-    console.error('Audio analysis error:', error);
-    return { flags: [], analyzed: false };
-  }
-}
-
-// Use AI to analyze feedback and check custom standards
+// Use AI to analyze filename patterns, standards, and feedback
 async function analyzeWithAI(
   fileName: string,
+  metadata: Record<string, unknown>,
   standards: any[],
   frameioFeedback: string[] = []
 ): Promise<QCFlag[]> {
@@ -424,22 +147,33 @@ async function analyzeWithAI(
   ).join('\n');
 
   const feedbackText = frameioFeedback.length > 0 
-    ? `\n\nFrame.io Feedback to verify:\n${frameioFeedback.map((f, i) => `${i + 1}. ${f}`).join('\n')}`
+    ? `\n\nFrame.io Feedback to verify was addressed:\n${frameioFeedback.map((f, i) => `${i + 1}. ${f}`).join('\n')}`
     : '';
 
-  const prompt = `You are a video QC assistant for TCV Studio. Analyze this video submission.
+  const prompt = `You are a video QC assistant for TCV Studio. Analyze this video submission based on the file name, metadata, and provided standards.
 
 Video File: ${fileName}
+
+File Metadata:
+- Format: ${metadata.extension}
+- Has version indicator (v1, v2, etc.): ${metadata.hasVersionIndicator}
+- Marked as final: ${metadata.markedAsFinal}
+- Has resolution hint: ${metadata.hasResolutionHint}
 
 QC Standards to Check:
 ${standardsText || 'No custom standards defined.'}
 ${feedbackText}
 
-Based on the file name and standards, identify any potential issues. For each issue found, respond in JSON format:
+Based on the file name, metadata, and standards, identify any potential issues or concerns. Consider:
+1. Does the file naming follow professional conventions?
+2. If there's Frame.io feedback, does the filename suggest revisions were made (v2, revised, final, etc.)?
+3. Are there any red flags in the naming that suggest incomplete work?
+
+For each issue found, respond in JSON format:
 {
   "flags": [
     {
-      "category": "string (e.g., 'Naming', 'Feedback', 'Standard')",
+      "category": "string (e.g., 'Naming', 'Feedback', 'Standard', 'Workflow')",
       "title": "short issue title",
       "description": "detailed explanation",
       "severity": "error | warning | info"
@@ -448,7 +182,7 @@ Based on the file name and standards, identify any potential issues. For each is
   "summary": "brief overall assessment"
 }
 
-If the file appears to meet standards and feedback seems addressed (based on file naming conventions like 'v2', 'revised', etc.), return empty flags array.
+If the file appears to meet standards and feedback seems addressed, return empty flags array with a positive summary.
 Only return the JSON, no other text.`;
 
   try {
@@ -528,9 +262,10 @@ Deno.serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    // Validate user
+    // Validate user - MUST pass token explicitly when verify_jwt=false
     const { data: { user }, error: authError } = await userSupabase.auth.getUser(token);
     if (authError || !user) {
+      console.error('Auth validation failed:', authError);
       return new Response(
         JSON.stringify({ error: 'Invalid or expired token' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -556,7 +291,7 @@ Deno.serve(async (req) => {
     // Check if user owns this upload or is admin/producer
     const { data: upload } = await serviceClient
       .from('video_uploads')
-      .select('uploader_id')
+      .select('uploader_id, file_size')
       .eq('id', uploadId)
       .single();
 
@@ -582,18 +317,16 @@ Deno.serve(async (req) => {
     const standards = await getQCStandards(serviceClient, clientName);
     console.log(`Loaded ${standards.length} QC standards`);
 
-    // Extract metadata
-    const metadata = extractMetadata(fileName);
+    // Extract metadata from filename
+    const metadata = extractMetadata(fileName, upload?.file_size);
 
-    // Run all checks in parallel
-    const [metadataFlags, aiFlags, visualResult, audioResult] = await Promise.all([
+    // Run metadata checks and AI analysis in parallel
+    const [metadataFlags, aiFlags] = await Promise.all([
       Promise.resolve(checkMetadataRules(metadata, standards)),
-      analyzeWithAI(fileName, standards, frameioFeedback),
-      analyzeVideoVisually(serviceClient, storagePath, fileName),
-      analyzeAudioLevels(serviceClient, storagePath, fileName),
+      analyzeWithAI(fileName, metadata, standards, frameioFeedback),
     ]);
 
-    const allFlags = [...metadataFlags, ...aiFlags, ...visualResult.flags, ...audioResult.flags];
+    const allFlags = [...metadataFlags, ...aiFlags];
     const hasErrors = allFlags.some(f => f.type === 'error');
     const passed = !hasErrors;
 
@@ -605,9 +338,10 @@ Deno.serve(async (req) => {
       thoughtTrace: {
         standardsChecked: standards.length,
         feedbackItemsReviewed: frameioFeedback?.length || 0,
-        aiModel: 'google/gemini-2.5-flash',
-        visualFramesAnalyzed: visualResult.framesAnalyzed,
-        audioAnalyzed: audioResult.analyzed,
+        aiModel: 'google/gemini-3-flash-preview',
+        visualFramesAnalyzed: 0,
+        audioAnalyzed: false,
+        note: 'Full visual/audio analysis requires video processing service integration',
       },
     };
 
@@ -622,7 +356,7 @@ Deno.serve(async (req) => {
       })
       .eq('id', uploadId);
 
-    console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags (visual: ${visualResult.framesAnalyzed}, audio: ${audioResult.analyzed})`);
+    console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags`);
 
     return new Response(
       JSON.stringify({ success: true, result }),
