@@ -234,22 +234,37 @@ export function VideoUploadModal({
             )}
 
             <div className="space-y-2">
-              <Label>Select Frame.io Project</Label>
-              <Select
-                value={selectedFrameioProject}
-                onValueChange={setSelectedFrameioProject}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={loadingProjects ? 'Loading...' : 'Select a project'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {frameioProjects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name} ({p.teamName})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Frame.io Project</Label>
+              {frameioProjects.length > 0 ? (
+                <Select
+                  value={selectedFrameioProject}
+                  onValueChange={setSelectedFrameioProject}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={loadingProjects ? 'Loading...' : 'Select a project'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {frameioProjects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name} ({p.teamName})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <div className="space-y-2">
+                  <Input
+                    value={selectedFrameioProject}
+                    onChange={(e) => setSelectedFrameioProject(e.target.value)}
+                    placeholder="Enter Frame.io Project ID"
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {loadingProjects ? 'Loading projects...' : 
+                      'No projects found via API. Enter the Project ID manually (find it in your Frame.io project URL).'}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
