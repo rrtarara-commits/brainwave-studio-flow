@@ -308,8 +308,8 @@ Deno.serve(async (req) => {
         const authUrl = new URL(ADOBE_IMS_AUTH_URL);
         authUrl.searchParams.set('client_id', clientId);
         authUrl.searchParams.set('redirect_uri', redirectUri);
-        // Adobe IMS requires space-separated scopes; 'offline_access' enables refresh tokens
-        authUrl.searchParams.set('scope', 'openid AdobeID offline_access');
+        // Adobe IMS requires space-separated scopes matching Adobe Developer Console settings
+        authUrl.searchParams.set('scope', 'openid email profile offline_access additional_info.roles');
         authUrl.searchParams.set('response_type', 'code');
         authUrl.searchParams.set('state', state);
 
