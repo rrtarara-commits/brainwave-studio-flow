@@ -6,6 +6,7 @@ import { Project, PROJECT_STATUSES, ProjectStatus } from '@/lib/types';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ScopeSentinelModal } from '@/components/projects/ScopeSentinelModal';
 import { SyncStatusIndicator } from '@/components/settings/SyncStatusIndicator';
+import { VideoUploadModal } from '@/components/video-upload/VideoUploadModal';
 import { useNotionPush } from '@/hooks/useNotionPush';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -26,6 +27,9 @@ import {
   Brain,
   DollarSign,
   GitBranch,
+  Upload,
+  ExternalLink,
+  Video,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -49,6 +53,10 @@ export default function Projects() {
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [aiPrediction, setAiPrediction] = useState<AIPrediction | null>(null);
   const [isLoadingPrediction, setIsLoadingPrediction] = useState(false);
+  
+  // Video Upload state
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [uploadProject, setUploadProject] = useState<Project | null>(null);
   
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -233,6 +241,21 @@ export default function Projects() {
     }
   };
 
+  const handleUploadComplete = async (projectId: string, frameioLink: string) => {
+    // Update local state
+    setProjects(prev => 
+      prev.map(p => p.id === projectId ? { ...p, frameio_link: frameioLink } : p)
+    );
+    setUploadModalOpen(false);
+    setUploadProject(null);
+  };
+
+  const openUploadModal = (project: Project, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setUploadProject(project);
+    setUploadModalOpen(true);
+  };
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active':
@@ -400,6 +423,35 @@ export default function Projects() {
                       </div>
                     )}
                   </div>
+
+                  {/* Frame.io Link & Upload */}
+                  <div className="flex items-center gap-2 pt-2 border-t border-border">
+                    {(project as any).frameio_link ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-xs"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          window.open((project as any).frameio_link, '_blank');
+                        }}
+                      >
+                        <Video className="h-3 w-3 mr-1" />
+                        View on Frame.io
+                        <ExternalLink className="h-3 w-3 ml-1" />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 text-xs"
+                        onClick={(e) => openUploadModal(project, e)}
+                      >
+                        <Upload className="h-3 w-3 mr-1" />
+                        Upload Video
+                      </Button>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             ))}
@@ -417,6 +469,18 @@ export default function Projects() {
           aiPrediction={aiPrediction}
           isLoadingPrediction={isLoadingPrediction}
           onDecision={handleRevisionDecision}
+        />
+      )}
+
+      {/* Video Upload Modal */}
+      {uploadProject && (
+        <VideoUploadModal
+          open={uploadModalOpen}
+          onOpenChange={setUploadModalOpen}
+          projectId={uploadProject.id}
+          projectTitle={uploadProject.title}
+          clientName={uploadProject.client_name}
+          onComplete={(link) => handleUploadComplete(uploadProject.id, link)}
         />
       )}
     </AppLayout>
