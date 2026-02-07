@@ -240,6 +240,8 @@ export type Database = {
           client_budget: number | null
           client_name: string | null
           created_at: string
+          frameio_link: string | null
+          frameio_project_id: string | null
           id: string
           internal_revisions: number | null
           notion_id: string | null
@@ -257,6 +259,8 @@ export type Database = {
           client_budget?: number | null
           client_name?: string | null
           created_at?: string
+          frameio_link?: string | null
+          frameio_project_id?: string | null
           id?: string
           internal_revisions?: number | null
           notion_id?: string | null
@@ -274,6 +278,8 @@ export type Database = {
           client_budget?: number | null
           client_name?: string | null
           created_at?: string
+          frameio_link?: string | null
+          frameio_project_id?: string | null
           id?: string
           internal_revisions?: number | null
           notion_id?: string | null
@@ -299,6 +305,51 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      qc_standards: {
+        Row: {
+          category: string
+          client_name: string | null
+          created_at: string
+          description: string | null
+          id: string
+          is_active: boolean
+          name: string
+          notion_source_id: string | null
+          rule_config: Json
+          rule_type: string
+          severity: string
+          updated_at: string
+        }
+        Insert: {
+          category: string
+          client_name?: string | null
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name: string
+          notion_source_id?: string | null
+          rule_config?: Json
+          rule_type: string
+          severity?: string
+          updated_at?: string
+        }
+        Update: {
+          category?: string
+          client_name?: string | null
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_active?: boolean
+          name?: string
+          notion_source_id?: string | null
+          rule_config?: Json
+          rule_type?: string
+          severity?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       system_logs: {
         Row: {
@@ -364,6 +415,80 @@ export type Database = {
           user_id?: string
         }
         Relationships: []
+      }
+      video_uploads: {
+        Row: {
+          analyzed_at: string | null
+          completed_at: string | null
+          created_at: string
+          dismissed_flags: string[] | null
+          file_name: string
+          file_size: number | null
+          frameio_asset_id: string | null
+          frameio_feedback: Json | null
+          frameio_link: string | null
+          frameio_project_id: string | null
+          id: string
+          project_id: string
+          qc_passed: boolean | null
+          qc_result: Json | null
+          status: string
+          storage_path: string | null
+          submitted_at: string | null
+          updated_at: string
+          uploader_id: string
+        }
+        Insert: {
+          analyzed_at?: string | null
+          completed_at?: string | null
+          created_at?: string
+          dismissed_flags?: string[] | null
+          file_name: string
+          file_size?: number | null
+          frameio_asset_id?: string | null
+          frameio_feedback?: Json | null
+          frameio_link?: string | null
+          frameio_project_id?: string | null
+          id?: string
+          project_id: string
+          qc_passed?: boolean | null
+          qc_result?: Json | null
+          status?: string
+          storage_path?: string | null
+          submitted_at?: string | null
+          updated_at?: string
+          uploader_id: string
+        }
+        Update: {
+          analyzed_at?: string | null
+          completed_at?: string | null
+          created_at?: string
+          dismissed_flags?: string[] | null
+          file_name?: string
+          file_size?: number | null
+          frameio_asset_id?: string | null
+          frameio_feedback?: Json | null
+          frameio_link?: string | null
+          frameio_project_id?: string | null
+          id?: string
+          project_id?: string
+          qc_passed?: boolean | null
+          qc_result?: Json | null
+          status?: string
+          storage_path?: string | null
+          submitted_at?: string | null
+          updated_at?: string
+          uploader_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "video_uploads_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       work_logs: {
         Row: {
