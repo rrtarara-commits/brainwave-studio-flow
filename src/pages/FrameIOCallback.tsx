@@ -11,6 +11,24 @@ export default function FrameIOCallback() {
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing');
   const [message, setMessage] = useState('Connecting to Frame.io...');
 
+  // Check if we're in a popup
+  const isPopup = window.opener !== null;
+
+  const closeOrRedirect = (path: string) => {
+    if (isPopup) {
+      // Notify opener and close popup
+      try {
+        window.opener?.postMessage({ type: 'frameio_auth_complete' }, window.location.origin);
+      } catch (e) {
+        // Opener may have closed
+      }
+      window.close();
+    } else {
+      // Normal redirect for non-popup flow
+      navigate(path);
+    }
+  };
+
   useEffect(() => {
     const code = searchParams.get('code');
     const state = searchParams.get('state');
@@ -25,23 +43,33 @@ export default function FrameIOCallback() {
         title: 'Frame.io Connection Failed',
         description: errorDescription || error,
       });
-      setTimeout(() => navigate('/projects'), 3000);
+      setTimeout(() => closeOrRedirect('/projects'), 3000);
       return;
     }
 
     if (!code) {
       setStatus('error');
       setMessage('No authorization code received');
-      setTimeout(() => navigate('/projects'), 3000);
+      setTimeout(() => closeOrRedirect('/projects'), 3000);
       return;
     }
 
-    // Verify state matches what we stored
-    const storedState = sessionStorage.getItem('frameio_oauth_state');
+    // Verify state matches what we stored (check both popup and opener sessionStorage)
+    let storedState = sessionStorage.getItem('frameio_oauth_state');
+    
+    // If in popup, state might be in opener's sessionStorage
+    if (!storedState && isPopup) {
+      try {
+        storedState = window.opener?.sessionStorage?.getItem('frameio_oauth_state') || null;
+      } catch (e) {
+        // Cross-origin, can't access opener's sessionStorage
+      }
+    }
+
     if (state !== storedState) {
       setStatus('error');
       setMessage('Security validation failed (state mismatch)');
-      setTimeout(() => navigate('/projects'), 3000);
+      setTimeout(() => closeOrRedirect('/projects'), 3000);
       return;
     }
 
@@ -61,15 +89,24 @@ export default function FrameIOCallback() {
         if (data?.success) {
           setStatus('success');
           setMessage('Successfully connected to Frame.io!');
+          
+          // Clear state from both contexts
           sessionStorage.removeItem('frameio_oauth_state');
+          try {
+            window.opener?.sessionStorage?.removeItem('frameio_oauth_state');
+          } catch (e) {
+            // Cross-origin
+          }
+          
           toast({
             title: 'Connected!',
             description: 'Your Frame.io account is now connected.',
           });
+          
           setTimeout(() => {
             const returnPath = sessionStorage.getItem('frameio_return_path') || '/projects';
             sessionStorage.removeItem('frameio_return_path');
-            navigate(returnPath);
+            closeOrRedirect(returnPath);
           }, 1500);
         } else {
           throw new Error(data?.error || 'Failed to exchange authorization code');
@@ -83,12 +120,12 @@ export default function FrameIOCallback() {
           title: 'Connection Failed',
           description: err instanceof Error ? err.message : 'Failed to connect',
         });
-        setTimeout(() => navigate('/projects'), 3000);
+        setTimeout(() => closeOrRedirect('/projects'), 3000);
       }
     };
 
     exchangeCode();
-  }, [searchParams, navigate, toast]);
+  }, [searchParams, navigate, toast, isPopup]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
@@ -106,7 +143,9 @@ export default function FrameIOCallback() {
         )}
         <p className="text-lg font-medium">{message}</p>
         {status !== 'processing' && (
-          <p className="text-sm text-muted-foreground">Redirecting...</p>
+          <p className="text-sm text-muted-foreground">
+            {isPopup ? 'This window will close...' : 'Redirecting...'}
+          </p>
         )}
       </div>
     </div>
