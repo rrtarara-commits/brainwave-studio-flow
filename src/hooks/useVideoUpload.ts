@@ -22,6 +22,8 @@ export interface QCResult {
     standardsChecked: number;
     feedbackItemsReviewed: number;
     aiModel: string;
+    visualFramesAnalyzed: number;
+    audioAnalyzed: boolean;
   };
 }
 
