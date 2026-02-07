@@ -12,12 +12,12 @@ interface NotionPage {
   properties: Record<string, any>;
 }
 
-interface SyncResult {
-  success: boolean;
-  projectsCount: number;
-  propertiesFound: string[];
-  sampleData: any;
-  error?: string;
+interface PropertyMapping {
+  [appField: string]: string;
+}
+
+interface StatusMapping {
+  [appStatus: string]: string;
 }
 
 // Initialize Supabase client
@@ -136,7 +136,18 @@ function extractPropertyValue(prop: any): any {
   }
 }
 
-// Find property by possible names (case-insensitive, flexible matching)
+// Get property value by mapped name (case-insensitive)
+function getMappedProperty(props: Record<string, any>, notionPropName: string): any {
+  if (!notionPropName) return null;
+  const keys = Object.keys(props);
+  const found = keys.find(k => k.toLowerCase() === notionPropName.toLowerCase());
+  if (found) {
+    return extractPropertyValue(props[found]);
+  }
+  return null;
+}
+
+// Fallback: Find property by possible names (case-insensitive, flexible matching)
 function findProperty(props: Record<string, any>, ...possibleNames: string[]): any {
   const keys = Object.keys(props);
   for (const name of possibleNames) {
@@ -158,32 +169,47 @@ function getTitleProperty(props: Record<string, any>): string {
   return 'Untitled';
 }
 
-// Process Projects database with flexible property mapping
-function mapProjectFromNotion(page: NotionPage): any {
+// Process Projects database using saved mappings
+function mapProjectFromNotion(
+  page: NotionPage, 
+  propertyMapping: PropertyMapping,
+  statusMapping: StatusMapping
+): any {
   const props = page.properties;
   
   // Get title (always exists in some form)
   const title = getTitleProperty(props);
   
-  // Flexibly find properties - ordered by specificity to match your Notion database
-  // Status: Check "Status 1" (status type) first, then "Status" (multi_select)
-  const status = findProperty(props, 'Status 1', 'Status', 'State', 'Phase') || 'active';
-  
-  // Client: Check formula first (has resolved name), then relations
-  const clientName = findProperty(props, 'Billable Client (zapier)', 'Billable Client *', '🤑 Clients', 'Client', 'ClientName', 'Client Name', 'Customer');
-  
-  // Budget and format
-  const clientBudget = findProperty(props, 'Client Budget', 'Budget', 'Amount', 'Value');
-  const videoFormat = findProperty(props, 'Video Format', 'Format', 'VideoFormat', 'Type');
-  
-  // Revisions
-  const billableRevisions = findProperty(props, 'BillableRevisions', 'Billable Revisions', 'Billable');
-  const internalRevisions = findProperty(props, 'InternalRevisions', 'Internal Revisions', 'Internal');
+  // Use mapped properties if available, otherwise fall back to fuzzy matching
+  let status: any;
+  let clientName: any;
+  let clientBudget: any;
+  let videoFormat: any;
+  let billableRevisions: any;
+  let internalRevisions: any;
+
+  if (Object.keys(propertyMapping).length > 0) {
+    // Use saved mappings
+    status = getMappedProperty(props, propertyMapping.status);
+    clientName = getMappedProperty(props, propertyMapping.client_name);
+    clientBudget = getMappedProperty(props, propertyMapping.client_budget);
+    videoFormat = getMappedProperty(props, propertyMapping.video_format);
+    billableRevisions = getMappedProperty(props, propertyMapping.billable_revisions);
+    internalRevisions = getMappedProperty(props, propertyMapping.internal_revisions);
+  } else {
+    // Fallback to fuzzy matching for backwards compatibility
+    status = findProperty(props, 'Status 1', 'Status', 'State', 'Phase');
+    clientName = findProperty(props, 'Billable Client (zapier)', 'Billable Client *', '🤑 Clients', 'Client', 'ClientName', 'Client Name', 'Customer');
+    clientBudget = findProperty(props, 'Client Budget', 'Budget', 'Amount', 'Value');
+    videoFormat = findProperty(props, 'Video Format', 'Format', 'VideoFormat', 'Type');
+    billableRevisions = findProperty(props, 'BillableRevisions', 'Billable Revisions', 'Billable');
+    internalRevisions = findProperty(props, 'InternalRevisions', 'Internal Revisions', 'Internal');
+  }
   
   const mapped = {
     notion_id: page.id,
     title: title || 'Untitled',
-    status: normalizeStatus(status),
+    status: normalizeStatus(status, statusMapping),
     client_name: typeof clientName === 'string' ? clientName : (Array.isArray(clientName) ? clientName[0] : null),
     client_budget: typeof clientBudget === 'number' ? clientBudget : 0,
     video_format: videoFormat,
@@ -197,12 +223,28 @@ function mapProjectFromNotion(page: NotionPage): any {
   return mapped;
 }
 
-// Normalize status to match our enum
-function normalizeStatus(status: any): string {
+// Normalize status using saved status mapping or defaults
+function normalizeStatus(status: any, statusMapping: StatusMapping): string {
   if (!status) return 'active';
-  const s = String(status).toLowerCase().replace(/[_\s-]/g, '');
+  const statusStr = String(status);
   
-  const statusMap: Record<string, string> = {
+  // First check if there's a direct mapping from Notion label to app status
+  // statusMapping is: { appStatus: notionLabel }, so we need to reverse it
+  const reverseMapping: Record<string, string> = {};
+  for (const [appStatus, notionLabel] of Object.entries(statusMapping)) {
+    if (notionLabel) {
+      reverseMapping[notionLabel.toLowerCase()] = appStatus;
+    }
+  }
+  
+  if (reverseMapping[statusStr.toLowerCase()]) {
+    return reverseMapping[statusStr.toLowerCase()];
+  }
+  
+  // Fallback to default normalization
+  const s = statusStr.toLowerCase().replace(/[_\s-]/g, '');
+  
+  const defaultStatusMap: Record<string, string> = {
     'active': 'active',
     'inactive': 'on_hold',
     'inprogress': 'in_progress',
@@ -214,7 +256,22 @@ function normalizeStatus(status: any): string {
     'paused': 'on_hold',
   };
   
-  return statusMap[s] || 'active';
+  return defaultStatusMap[s] || 'active';
+}
+
+// Save last sync timestamp
+async function updateLastSyncTime() {
+  try {
+    await supabase
+      .from('app_config')
+      .upsert({ 
+        key: 'last_notion_sync', 
+        value: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'key' });
+  } catch (error) {
+    console.error('Error updating last sync time:', error);
+  }
 }
 
 Deno.serve(async (req) => {
@@ -232,11 +289,11 @@ Deno.serve(async (req) => {
     const url = new URL(req.url);
     const debugMode = url.searchParams.get('debug') === 'true';
 
-    // Fetch config
+    // Fetch all config including mappings
     const { data: configs, error: configError } = await supabase
       .from('app_config')
       .select('key, value')
-      .in('key', ['notion_projects_db', 'notion_team_db', 'notion_clients_db']);
+      .or('key.eq.notion_projects_db,key.eq.notion_team_db,key.eq.notion_clients_db,key.eq.notion_projects_db_mapping,key.eq.notion_projects_db_status_mapping');
 
     if (configError) {
       throw new Error(`Failed to fetch config: ${configError.message}`);
@@ -248,6 +305,31 @@ Deno.serve(async (req) => {
     if (!projectsDbId) {
       throw new Error('notion_projects_db not configured in settings');
     }
+
+    // Parse property and status mappings
+    let propertyMapping: PropertyMapping = {};
+    let statusMapping: StatusMapping = {};
+    
+    try {
+      const mappingStr = configMap.get('notion_projects_db_mapping');
+      if (mappingStr) {
+        propertyMapping = JSON.parse(mappingStr);
+      }
+    } catch {
+      console.log('No property mapping found, using defaults');
+    }
+    
+    try {
+      const statusMappingStr = configMap.get('notion_projects_db_status_mapping');
+      if (statusMappingStr) {
+        statusMapping = JSON.parse(statusMappingStr);
+      }
+    } catch {
+      console.log('No status mapping found, using defaults');
+    }
+
+    console.log('Using property mapping:', propertyMapping);
+    console.log('Using status mapping:', statusMapping);
 
     // Fetch Projects
     const { pages, error: fetchError } = await fetchNotionDatabase(projectsDbId, notionApiKey);
@@ -281,14 +363,14 @@ Deno.serve(async (req) => {
           sampleValues: Object.fromEntries(
             Object.entries(samplePage.properties).map(([k, v]) => [k, extractPropertyValue(v)])
           ),
-          hint: 'These are the properties found in your Notion database. Use these names in your database.',
+          hint: 'These are the properties found in your Notion database. Use these names in your mappings.',
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Map and sync projects
-    const projects = pages.map(mapProjectFromNotion);
+    // Map and sync projects using saved mappings
+    const projects = pages.map(page => mapProjectFromNotion(page, propertyMapping, statusMapping));
     
     if (projects.length === 0) {
       return new Response(
@@ -310,12 +392,16 @@ Deno.serve(async (req) => {
       throw new Error(`Failed to upsert projects: ${upsertError.message}`);
     }
 
+    // Update last sync time
+    await updateLastSyncTime();
+
     return new Response(
       JSON.stringify({
         success: true,
         message: `Synced ${projects.length} projects from Notion`,
         synced: projects.length,
         sample: projects[0],
+        mappingsUsed: Object.keys(propertyMapping).length > 0,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

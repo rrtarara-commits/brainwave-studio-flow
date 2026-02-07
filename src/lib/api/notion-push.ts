@@ -1,17 +1,20 @@
 import { supabase } from '@/integrations/supabase/client';
 
-interface PushProjectData {
+export interface ProjectUpdate {
   status?: string;
   client_budget?: number;
   video_format?: string;
+  billable_revisions?: number;
+  internal_revisions?: number;
 }
 
-interface PushWorkLogData {
+export interface WorkLogData {
   hours: number;
-  logged_at: string;
-  task_type?: string[];
+  date: string;
   notes?: string;
-  project_title: string;
+  taskTypes?: string[];
+  projectTitle: string;
+  projectNotionId?: string;
 }
 
 export const notionPushApi = {
@@ -19,7 +22,7 @@ export const notionPushApi = {
    * Push a project update to Notion
    * Only works for projects that have a notion_id (were synced from Notion)
    */
-  async pushProjectUpdate(notionId: string | null, data: PushProjectData) {
+  async pushProjectUpdate(notionId: string | null, data: ProjectUpdate) {
     if (!notionId) {
       console.log('Project has no notion_id, skipping Notion push');
       return { success: false, error: 'No notion_id - project not from Notion' };
@@ -53,12 +56,18 @@ export const notionPushApi = {
    * Push a new work log entry to Notion
    * Requires notion_logs_db to be configured in app_config
    */
-  async pushWorkLog(data: PushWorkLogData) {
+  async pushWorkLog(data: WorkLogData) {
     try {
       const { data: result, error } = await supabase.functions.invoke('notion-push', {
         body: {
           type: 'work_log',
-          data,
+          data: {
+            hours: data.hours,
+            logged_at: data.date,
+            task_type: data.taskTypes,
+            notes: data.notes,
+            project_title: data.projectTitle,
+          },
         },
       });
 
