@@ -11,6 +11,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { UserManagement } from '@/components/settings/UserManagement';
 import { NotionDatabaseMapping } from '@/components/settings/NotionDatabaseMapping';
+import { StatusValueMapping } from '@/components/settings/StatusValueMapping';
+import { SyncStatusIndicator } from '@/components/settings/SyncStatusIndicator';
 import {
   Database,
   XCircle,
@@ -158,8 +160,10 @@ export default function Settings() {
           </TabsList>
 
           {/* Notion Database Mapping */}
-          <TabsContent value="notion">
+          <TabsContent value="notion" className="space-y-6">
+            <SyncStatusIndicator />
             <NotionDatabaseMapping />
+            <StatusValueMapping />
           </TabsContent>
 
           {/* User Management */}

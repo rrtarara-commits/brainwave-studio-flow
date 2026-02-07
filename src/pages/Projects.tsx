@@ -5,6 +5,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Project, PROJECT_STATUSES, ProjectStatus } from '@/lib/types';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ScopeSentinelModal } from '@/components/projects/ScopeSentinelModal';
+import { SyncStatusIndicator } from '@/components/settings/SyncStatusIndicator';
+import { useNotionPush } from '@/hooks/useNotionPush';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -50,6 +52,7 @@ export default function Projects() {
   
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { pushProjectUpdate } = useNotionPush();
 
   const fetchProjects = useCallback(async () => {
     try {
@@ -133,6 +136,9 @@ export default function Projects() {
   };
 
   const updateProjectStatus = async (projectId: string, newStatus: string) => {
+    // Find the project to get its notion_id
+    const project = projects.find(p => p.id === projectId);
+    
     try {
       const { error } = await supabase
         .from('projects')
@@ -144,6 +150,11 @@ export default function Projects() {
       setProjects((prev) =>
         prev.map((p) => (p.id === projectId ? { ...p, status: newStatus } : p))
       );
+
+      // Auto-push to Notion if project has a notion_id
+      if (project?.notion_id) {
+        pushProjectUpdate(project.notion_id, { status: newStatus });
+      }
 
       toast({
         title: 'Status updated',
@@ -250,12 +261,15 @@ export default function Projects() {
               Manage your video production projects
             </p>
           </div>
-          {(isAdmin || isProducer) && (
-            <Button className="bg-primary hover:bg-primary/90">
-              <Plus className="h-4 w-4 mr-2" />
-              New Project
-            </Button>
-          )}
+          <div className="flex items-center gap-3">
+            <SyncStatusIndicator compact onSyncComplete={fetchProjects} />
+            {(isAdmin || isProducer) && (
+              <Button className="bg-primary hover:bg-primary/90">
+                <Plus className="h-4 w-4 mr-2" />
+                New Project
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Filters */}
