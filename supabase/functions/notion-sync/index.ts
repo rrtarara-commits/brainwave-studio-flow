@@ -7,11 +7,17 @@ const corsHeaders = {
 
 const NOTION_API_VERSION = '2022-06-28';
 
-interface NotionBlock {
-  object: string;
+interface NotionPage {
   id: string;
-  parent?: { type: string; database_id?: string };
-  properties?: Record<string, any>;
+  properties: Record<string, any>;
+}
+
+interface SyncResult {
+  success: boolean;
+  projectsCount: number;
+  propertiesFound: string[];
+  sampleData: any;
+  error?: string;
 }
 
 // Initialize Supabase client
@@ -24,14 +30,22 @@ const supabase = createClient(
 async function fetchNotionDatabase(
   databaseId: string,
   notionApiKey: string
-): Promise<NotionBlock[]> {
-  const allPages: NotionBlock[] = [];
+): Promise<{ pages: NotionPage[]; error?: string }> {
+  const allPages: NotionPage[] = [];
   let cursor: string | undefined;
+
+  // Format database ID with dashes if needed
+  let formattedId = databaseId.replace(/-/g, '');
+  if (formattedId.length === 32) {
+    formattedId = `${formattedId.slice(0, 8)}-${formattedId.slice(8, 12)}-${formattedId.slice(12, 16)}-${formattedId.slice(16, 20)}-${formattedId.slice(20)}`;
+  }
+
+  console.log(`Fetching Notion database: ${formattedId}`);
 
   try {
     do {
       const response = await fetch(
-        `https://api.notion.com/v1/databases/${databaseId}/query`,
+        `https://api.notion.com/v1/databases/${formattedId}/query`,
         {
           method: 'POST',
           headers: {
@@ -46,147 +60,168 @@ async function fetchNotionDatabase(
         }
       );
 
+      const responseText = await response.text();
+      
       if (!response.ok) {
-        console.error(`Notion API error: ${response.status} - ${await response.text()}`);
-        throw new Error(`Failed to fetch Notion database: ${response.status}`);
+        console.error(`Notion API error: ${response.status} - ${responseText}`);
+        return { 
+          pages: [], 
+          error: `Notion API returned ${response.status}: ${responseText.slice(0, 200)}` 
+        };
       }
 
-      const data = await response.json();
+      const data = JSON.parse(responseText);
       allPages.push(...(data.results || []));
       cursor = data.next_cursor || undefined;
 
-      // Add delay between requests to respect rate limits
       if (cursor) {
         await new Promise((r) => setTimeout(r, 100));
       }
     } while (cursor);
   } catch (error) {
-    console.error(`Error fetching Notion database ${databaseId}:`, error);
-    throw error;
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`Error fetching Notion database:`, error);
+    return { pages: [], error: msg };
   }
 
-  return allPages;
+  return { pages: allPages };
 }
 
-// Extract text from Notion rich text array
-function extractText(richTextArray: any[]): string {
-  if (!Array.isArray(richTextArray)) return '';
-  return richTextArray.map((rt) => rt.plain_text || '').join('');
-}
-
-// Process Projects database
-async function syncProjects(projectsDbId: string, notionApiKey: string) {
-  console.log('Syncing Projects...');
-  const pages = await fetchNotionDatabase(projectsDbId, notionApiKey);
-
-  const projects = pages.map((page) => {
-    const props = page.properties || {};
-    return {
-      notion_id: page.id,
-      title: extractText(props.Title?.title || props.Name?.title || []) || 'Untitled',
-      status: props.Status?.select?.name || 'active',
-      client_name: extractText(props['Client Name']?.rich_text || props.Client?.rich_text || []) || null,
-      client_budget: props['Client Budget']?.number || props.Budget?.number || 0,
-      video_format: props['Video Format']?.select?.name || props.Format?.select?.name || null,
-      billable_revisions: props['Billable Revisions']?.number || 0,
-      internal_revisions: props['Internal Revisions']?.number || 0,
-      sentiment_score: props['Sentiment Score']?.number || 0,
-    };
-  });
-
-  if (projects.length === 0) {
-    console.log('No projects to sync');
-    return;
+// Extract value from ANY Notion property type
+function extractPropertyValue(prop: any): any {
+  if (!prop) return null;
+  
+  const type = prop.type;
+  
+  switch (type) {
+    case 'title':
+      return prop.title?.map((t: any) => t.plain_text).join('') || '';
+    case 'rich_text':
+      return prop.rich_text?.map((t: any) => t.plain_text).join('') || '';
+    case 'number':
+      return prop.number;
+    case 'select':
+      return prop.select?.name || null;
+    case 'multi_select':
+      return prop.multi_select?.map((s: any) => s.name) || [];
+    case 'date':
+      return prop.date?.start || null;
+    case 'checkbox':
+      return prop.checkbox || false;
+    case 'url':
+      return prop.url || null;
+    case 'email':
+      return prop.email || null;
+    case 'phone_number':
+      return prop.phone_number || null;
+    case 'files':
+      return prop.files?.[0]?.file?.url || prop.files?.[0]?.external?.url || null;
+    case 'relation':
+      return prop.relation?.map((r: any) => r.id) || [];
+    case 'rollup':
+      return prop.rollup?.array?.map((a: any) => extractPropertyValue(a)) || null;
+    case 'formula':
+      return prop.formula?.[prop.formula?.type] || null;
+    case 'status':
+      return prop.status?.name || null;
+    case 'people':
+      return prop.people?.map((p: any) => p.name || p.id) || [];
+    case 'created_time':
+      return prop.created_time || null;
+    case 'last_edited_time':
+      return prop.last_edited_time || null;
+    default:
+      console.log(`Unknown property type: ${type}`);
+      return null;
   }
+}
 
-  // Batch insert projects (100 at a time)
-  const batchSize = 100;
-  for (let i = 0; i < projects.length; i += batchSize) {
-    const batch = projects.slice(i, i + batchSize);
-    const { error } = await supabase
-      .from('projects')
-      .upsert(batch, { onConflict: 'notion_id' });
-
-    if (error) {
-      console.error(`Error upserting projects batch ${i / batchSize}:`, error);
-      throw error;
+// Find property by possible names (case-insensitive, flexible matching)
+function findProperty(props: Record<string, any>, ...possibleNames: string[]): any {
+  const keys = Object.keys(props);
+  for (const name of possibleNames) {
+    const found = keys.find(k => k.toLowerCase().replace(/[_\s-]/g, '') === name.toLowerCase().replace(/[_\s-]/g, ''));
+    if (found) {
+      return extractPropertyValue(props[found]);
     }
   }
-
-  console.log(`Synced ${projects.length} projects`);
+  return null;
 }
 
-// Process Team Roster database
-async function syncTeamRoster(teamDbId: string, notionApiKey: string) {
-  console.log('Syncing Team Roster...');
-  const pages = await fetchNotionDatabase(teamDbId, notionApiKey);
-
-  const profiles = pages.map((page) => {
-    const props = page.properties || {};
-    const email = extractText(props.Email?.email ? [{ plain_text: props.Email.email }] : props.Email?.rich_text || []);
-    const fullName = extractText(props.Name?.title || props['Full Name']?.title || []);
-    
-    return {
-      // Use email as a deterministic user_id placeholder (will be matched during update)
-      user_id: undefined, // Will be populated separately if needed
-      email: email || undefined,
-      full_name: fullName || email || 'Unknown',
-      avatar_url: props.Avatar?.files?.[0]?.file?.url || props.Photo?.files?.[0]?.file?.url || null,
-      hourly_rate: props['Hourly Rate']?.number || 0,
-      friction_score: props['Friction Score']?.number || 0,
-      can_manage_resources: props['Can Manage Resources']?.checkbox || false,
-      can_upload_footage: props['Can Upload Footage']?.checkbox || false,
-    };
-  });
-
-  if (profiles.length === 0) {
-    console.log('No team members to sync');
-    return;
+// Get the first "title" type property (Notion databases always have one)
+function getTitleProperty(props: Record<string, any>): string {
+  for (const [key, value] of Object.entries(props)) {
+    if (value?.type === 'title') {
+      return extractPropertyValue(value) || 'Untitled';
+    }
   }
-
-  // For team roster, we store raw profile data without user_id
-  // In production, you'd match these against actual user accounts
-  console.log(`Processed ${profiles.length} team members (not synced - requires user matching)`);
+  return 'Untitled';
 }
 
-// Process Clients database
-async function syncClients(clientsDbId: string, notionApiKey: string) {
-  console.log('Syncing Clients...');
-  const pages = await fetchNotionDatabase(clientsDbId, notionApiKey);
+// Process Projects database with flexible property mapping
+function mapProjectFromNotion(page: NotionPage): any {
+  const props = page.properties;
+  const allProps = Object.keys(props);
+  
+  // Get title (always exists in some form)
+  const title = getTitleProperty(props);
+  
+  // Flexibly find other properties
+  const status = findProperty(props, 'Status', 'State', 'Phase') || 'active';
+  const clientName = findProperty(props, 'Client', 'ClientName', 'Client Name', 'Customer');
+  const clientBudget = findProperty(props, 'Budget', 'ClientBudget', 'Client Budget', 'Amount', 'Value');
+  const videoFormat = findProperty(props, 'Format', 'VideoFormat', 'Video Format', 'Type');
+  const billableRevisions = findProperty(props, 'BillableRevisions', 'Billable Revisions', 'Billable');
+  const internalRevisions = findProperty(props, 'InternalRevisions', 'Internal Revisions', 'Internal');
+  
+  return {
+    notion_id: page.id,
+    title: title || 'Untitled',
+    status: normalizeStatus(status),
+    client_name: clientName,
+    client_budget: typeof clientBudget === 'number' ? clientBudget : 0,
+    video_format: videoFormat,
+    billable_revisions: typeof billableRevisions === 'number' ? billableRevisions : 0,
+    internal_revisions: typeof internalRevisions === 'number' ? internalRevisions : 0,
+    sentiment_score: 0,
+  };
+}
 
-  const clients = pages.map((page) => {
-    const props = page.properties || {};
-    return {
-      notion_id: page.id,
-      name: extractText(props.Name?.title || props['Client Name']?.title || []) || 'Untitled Client',
-      email: extractText(props.Email?.email ? [{ plain_text: props.Email.email }] : props.Email?.rich_text || []) || null,
-      contact_person: extractText(props['Contact Person']?.rich_text || props.Contact?.rich_text || []) || null,
-    };
-  });
-
-  if (clients.length === 0) {
-    console.log('No clients to sync');
-    return;
-  }
-
-  // Store clients for reference (optional - implement storage if needed)
-  console.log(`Processed ${clients.length} clients`);
+// Normalize status to match our enum
+function normalizeStatus(status: any): string {
+  if (!status) return 'active';
+  const s = String(status).toLowerCase().replace(/[_\s-]/g, '');
+  
+  const statusMap: Record<string, string> = {
+    'active': 'active',
+    'inprogress': 'in_progress',
+    'readyforedit': 'ready_for_edit',
+    'inrevision': 'in_revision',
+    'completed': 'completed',
+    'done': 'completed',
+    'onhold': 'on_hold',
+    'paused': 'on_hold',
+  };
+  
+  return statusMap[s] || 'active';
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    // Check for required environment variables
     const notionApiKey = Deno.env.get('NOTION_API_KEY');
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is not configured');
     }
 
-    // Fetch Notion database IDs from app_config
+    // Check if this is a debug/test request
+    const url = new URL(req.url);
+    const debugMode = url.searchParams.get('debug') === 'true';
+
+    // Fetch config
     const { data: configs, error: configError } = await supabase
       .from('app_config')
       .select('key, value')
@@ -198,80 +233,89 @@ Deno.serve(async (req) => {
 
     const configMap = new Map((configs || []).map((c: any) => [c.key, c.value]));
     const projectsDbId = configMap.get('notion_projects_db');
-    const teamDbId = configMap.get('notion_team_db');
-    const clientsDbId = configMap.get('notion_clients_db');
 
     if (!projectsDbId) {
       throw new Error('notion_projects_db not configured in settings');
     }
 
-    const results = {
-      projects: 0,
-      team: 0,
-      clients: 0,
-      errors: [] as string[],
-    };
-
-    // Sync Projects
-    try {
-      await syncProjects(projectsDbId, notionApiKey);
-      results.projects = 1; // Flag success
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      results.errors.push(`Projects sync failed: ${msg}`);
-      console.error('Projects sync error:', error);
+    // Fetch Projects
+    const { pages, error: fetchError } = await fetchNotionDatabase(projectsDbId, notionApiKey);
+    
+    if (fetchError) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: fetchError,
+          hint: 'Make sure your Notion integration has access to this database. Go to Notion → Share → Add your integration.',
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Sync Team Roster (if configured)
-    if (teamDbId) {
-      try {
-        await syncTeamRoster(teamDbId, notionApiKey);
-        results.team = 1;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
-        results.errors.push(`Team sync failed: ${msg}`);
-        console.error('Team sync error:', error);
+    // Debug mode: return property structure without syncing
+    if (debugMode && pages.length > 0) {
+      const samplePage = pages[0];
+      const propertyInfo: Record<string, string> = {};
+      
+      for (const [key, value] of Object.entries(samplePage.properties)) {
+        propertyInfo[key] = (value as any).type;
       }
+      
+      return new Response(
+        JSON.stringify({
+          success: true,
+          mode: 'debug',
+          pagesFound: pages.length,
+          properties: propertyInfo,
+          sampleValues: Object.fromEntries(
+            Object.entries(samplePage.properties).map(([k, v]) => [k, extractPropertyValue(v)])
+          ),
+          hint: 'These are the properties found in your Notion database. Use these names in your database.',
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Sync Clients (if configured)
-    if (clientsDbId) {
-      try {
-        await syncClients(clientsDbId, notionApiKey);
-        results.clients = 1;
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : 'Unknown error';
-        results.errors.push(`Clients sync failed: ${msg}`);
-        console.error('Clients sync error:', error);
-      }
+    // Map and sync projects
+    const projects = pages.map(mapProjectFromNotion);
+    
+    if (projects.length === 0) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: 'No projects found in Notion database',
+          synced: 0,
+        }),
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    console.log('Sync completed:', results);
+    // Batch upsert
+    const { error: upsertError } = await supabase
+      .from('projects')
+      .upsert(projects, { onConflict: 'notion_id' });
+
+    if (upsertError) {
+      throw new Error(`Failed to upsert projects: ${upsertError.message}`);
+    }
 
     return new Response(
       JSON.stringify({
-        success: results.errors.length === 0,
-        message: 'Notion sync completed',
-        results,
+        success: true,
+        message: `Synced ${projects.length} projects from Notion`,
+        synced: projects.length,
+        sample: projects[0],
       }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      }
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
+
   } catch (error) {
     console.error('Sync error:', error);
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     return new Response(
-      JSON.stringify({
-        success: false,
-        error: errorMessage,
-      }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      }
+      JSON.stringify({ success: false, error: errorMessage }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
