@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
+import { UserManagement } from '@/components/settings/UserManagement';
 import {
   Database,
   Link,
@@ -16,6 +17,7 @@ import {
   XCircle,
   Loader2,
   Save,
+  Users,
 } from 'lucide-react';
 
 export default function Settings() {
@@ -177,8 +179,12 @@ export default function Settings() {
           </Button>
         </div>
 
-        <Tabs defaultValue="notion" className="space-y-4">
+        <Tabs defaultValue="users" className="space-y-4">
           <TabsList className="bg-secondary">
+            <TabsTrigger value="users" className="data-[state=active]:bg-background">
+              <Users className="h-4 w-4 mr-2" />
+              Users
+            </TabsTrigger>
             <TabsTrigger value="notion" className="data-[state=active]:bg-background">
               <Database className="h-4 w-4 mr-2" />
               Database Mapping
@@ -187,6 +193,11 @@ export default function Settings() {
               General
             </TabsTrigger>
           </TabsList>
+
+          {/* User Management */}
+          <TabsContent value="users">
+            <UserManagement />
+          </TabsContent>
 
           {/* Notion Database Mapping */}
           <TabsContent value="notion">
