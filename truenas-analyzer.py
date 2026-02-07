@@ -32,7 +32,7 @@ class DeepAnalyzerConfig:
         self.supabase_url = os.getenv('SUPABASE_URL', 'https://hdytpmbgrhaxyjvvpewy.supabase.co')
         self.truenas_secret = os.getenv('TRUENAS_CALLBACK_SECRET')
         self.gemini_api_key = os.getenv('GEMINI_API_KEY')
-        self.poll_interval = int(os.getenv('POLL_INTERVAL', '60'))
+        self.poll_interval = int(os.getenv('POLL_INTERVAL', '15'))  # 15 seconds for near-immediate pickup
         self.temp_dir = Path(os.getenv('TEMP_DIR', '/tmp/video-analysis'))
         self.ffmpeg_path = os.getenv('FFMPEG_PATH', 'ffmpeg')
         self.ffprobe_path = os.getenv('FFPROBE_PATH', 'ffprobe')
@@ -144,54 +144,79 @@ class VideoAnalyzer:
             return []
     
     def analyze_audio(self, video_path: Path) -> Dict[str, Any]:
-        """Analyze audio levels and issues"""
+        """Analyze audio levels - dialogue should average -3dB, flag any peaking"""
         try:
             logger.info(f'Analyzing audio from {video_path.name}')
             
-            # Extract audio and analyze
-            audio_path = self.config.temp_dir / f'{video_path.stem}_audio.wav'
-            
-            ffmpeg_cmd = [
+            # Use ffmpeg volumedetect to get accurate levels
+            volumedetect_cmd = [
                 self.config.ffmpeg_path,
                 '-i', str(video_path),
-                '-q:a', '9',
-                '-b:a', '192k',
+                '-af', 'volumedetect',
                 '-vn',
-                str(audio_path)
-            ]
-            
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
-            
-            if result.returncode != 0:
-                logger.error(f'Audio extraction failed: {result.stderr}')
-                return {
-                    'analyzed': False,
-                    'averageDialogueDb': 0,
-                    'peakDb': 0,
-                    'issues': [{'type': 'Audio extraction failed', 'description': 'Could not extract audio', 'severity': 'warning'}],
-                    'summary': 'Audio analysis not available'
-                }
-            
-            # Analyze levels using ffmpeg astats
-            stats_cmd = [
-                self.config.ffmpeg_path,
-                '-i', str(audio_path),
-                '-af', 'astats=metadata=1:reset=1',
                 '-f', 'null',
                 '-'
             ]
             
-            result = subprocess.run(stats_cmd, capture_output=True, text=True, timeout=60)
+            result = subprocess.run(volumedetect_cmd, capture_output=True, text=True, timeout=300)
             
-            # Parse audio stats (simplified - looking for silent sections)
+            if result.returncode != 0:
+                logger.error(f'Audio analysis failed: {result.stderr}')
+                return {
+                    'analyzed': False,
+                    'averageDialogueDb': 0,
+                    'peakDb': 0,
+                    'issues': [{'type': 'Audio analysis failed', 'description': 'Could not analyze audio', 'severity': 'warning'}],
+                    'summary': 'Audio analysis not available'
+                }
+            
+            # Parse volumedetect output
+            stderr = result.stderr
             issues = []
-            average_db = -18  # Typical dialogue level
-            peak_db = -3
             
-            if 'Silent' in result.stderr:
+            # Extract mean volume (dialogue average)
+            mean_volume = -20.0  # Default fallback
+            peak_volume = -3.0
+            
+            import re
+            mean_match = re.search(r'mean_volume:\s*([-\d.]+)\s*dB', stderr)
+            if mean_match:
+                mean_volume = float(mean_match.group(1))
+            
+            max_match = re.search(r'max_volume:\s*([-\d.]+)\s*dB', stderr)
+            if max_match:
+                peak_volume = float(max_match.group(1))
+            
+            logger.info(f'Audio levels - Mean: {mean_volume}dB, Peak: {peak_volume}dB')
+            
+            # Check dialogue level (should average around -3dB)
+            TARGET_DIALOGUE_DB = -3.0
+            TOLERANCE_DB = 3.0  # Allow ±3dB tolerance
+            
+            if mean_volume < (TARGET_DIALOGUE_DB - TOLERANCE_DB):
                 issues.append({
-                    'type': 'Silent sections detected',
-                    'description': 'Audio has extended silent sections',
+                    'type': 'Audio too quiet',
+                    'description': f'Dialogue averages {mean_volume:.1f}dB, should be around {TARGET_DIALOGUE_DB}dB. Audio is {abs(mean_volume - TARGET_DIALOGUE_DB):.1f}dB too quiet.',
+                    'severity': 'error'
+                })
+            elif mean_volume > (TARGET_DIALOGUE_DB + TOLERANCE_DB):
+                issues.append({
+                    'type': 'Audio too loud',
+                    'description': f'Dialogue averages {mean_volume:.1f}dB, should be around {TARGET_DIALOGUE_DB}dB. Audio is {mean_volume - TARGET_DIALOGUE_DB:.1f}dB too hot.',
+                    'severity': 'warning'
+                })
+            
+            # Check for peaking (clipping) - anything above -0.5dB is dangerous
+            if peak_volume > -0.5:
+                issues.append({
+                    'type': 'Audio peaking/clipping',
+                    'description': f'Audio peaks at {peak_volume:.1f}dB which will cause clipping. Peaks should stay below -1dB.',
+                    'severity': 'error'
+                })
+            elif peak_volume > -1.0:
+                issues.append({
+                    'type': 'Audio near clipping',
+                    'description': f'Audio peaks at {peak_volume:.1f}dB which is dangerously close to clipping. Consider reducing levels.',
                     'severity': 'warning'
                 })
             
@@ -205,12 +230,19 @@ class VideoAnalyzer:
             # Cleanup
             audio_path.unlink(missing_ok=True)
             
+            summary = f'Audio OK - Dialogue: {mean_volume:.1f}dB, Peak: {peak_volume:.1f}dB'
+            if issues:
+                error_count = len([i for i in issues if i['severity'] == 'error'])
+                warning_count = len([i for i in issues if i['severity'] == 'warning'])
+                summary = f'Audio issues: {error_count} error(s), {warning_count} warning(s) - Dialogue: {mean_volume:.1f}dB, Peak: {peak_volume:.1f}dB'
+            
             return {
                 'analyzed': True,
-                'averageDialogueDb': average_db,
-                'peakDb': peak_db,
+                'averageDialogueDb': mean_volume,
+                'peakDb': peak_volume,
+                'targetDb': TARGET_DIALOGUE_DB,
                 'issues': issues,
-                'summary': f'Audio OK - Peak: {peak_db}dB, Dialogue: {average_db}dB' if not issues else f'Audio issues detected: {len(issues)} problem(s)'
+                'summary': summary
             }
         except Exception as e:
             logger.error(f'Error analyzing audio: {e}')
@@ -223,7 +255,7 @@ class VideoAnalyzer:
             }
     
     def analyze_visual_with_gemini(self, frames: List[Path], video_name: str) -> Dict[str, Any]:
-        """Analyze video frames with Gemini Vision API"""
+        """Analyze video frames with Gemini Vision API for quality and color issues"""
         try:
             if not frames:
                 return {
@@ -260,23 +292,40 @@ class VideoAnalyzer:
                     'content': [
                         {
                             'type': 'text',
-                            'text': f'''Analyze these video frames from "{video_name}" for quality issues:
+                            'text': f'''Analyze these video frames from "{video_name}" for quality issues. Be thorough but only flag real problems.
 
-1. Visual artifacts (glitches, compression artifacts, pixelation)
-2. Black frames or color issues
-3. Text legibility problems
-4. Lighting/exposure issues
-5. Motion blur or unstable frames
+**CHECK FOR THESE ISSUES:**
 
-For each issue found, note:
-- Issue type (e.g., "Black frame", "Compression artifact")
-- Severity: "error" (blocks playback), "warning" (quality issue), "info" (minor)
-- Timestamp approximate (which frame)
+1. **Color Balance Problems** (PRIORITY - flag these!)
+   - Shots that look obviously too warm (orange/yellow cast) or too cool (blue cast)
+   - Inconsistent color grading between shots
+   - Unnatural skin tones
+   - Heavy color casts that don't appear intentional
+
+2. **Visual Artifacts**
+   - Glitches, compression artifacts, macroblocking
+   - Pixelation or banding in gradients
+   - Interlacing artifacts
+
+3. **Exposure Issues**
+   - Overblown highlights (clipped whites)
+   - Crushed blacks (no shadow detail)
+   - Obviously underexposed or overexposed shots
+
+4. **Technical Problems**
+   - Black frames (not intentional fades)
+   - Text that's hard to read
+   - Motion blur that obscures important content
+
+**SEVERITY GUIDE:**
+- "error": Must be fixed before delivery (obvious color cast, visible glitches, black frames)
+- "warning": Should be reviewed (minor color inconsistency, slight exposure issues)
+- "info": Stylistic note (intentional look that might be questioned)
 
 Return your analysis as JSON:
 {{
   "issues": [
-    {{"type": "issue name", "description": "details", "severity": "error|warning|info"}},
+    {{"type": "issue name", "description": "specific details about what you see", "severity": "error|warning|info", "frame": "which frame number if applicable"}},
   ]
 }}
 
