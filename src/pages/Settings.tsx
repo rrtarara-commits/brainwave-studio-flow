@@ -13,12 +13,14 @@ import { UserManagement } from '@/components/settings/UserManagement';
 import { NotionDatabaseMapping } from '@/components/settings/NotionDatabaseMapping';
 import { StatusValueMapping } from '@/components/settings/StatusValueMapping';
 import { SyncStatusIndicator } from '@/components/settings/SyncStatusIndicator';
+import { QCStandardsManager } from '@/components/settings/QCStandardsManager';
 import {
   Database,
   XCircle,
   Loader2,
   Save,
   Users,
+  Video,
 } from 'lucide-react';
 
 export default function Settings() {
@@ -150,6 +152,10 @@ export default function Settings() {
               <Database className="h-4 w-4 mr-2" />
               Database Mapping
             </TabsTrigger>
+            <TabsTrigger value="qc" className="data-[state=active]:bg-background">
+              <Video className="h-4 w-4 mr-2" />
+              Video QC
+            </TabsTrigger>
             <TabsTrigger value="users" className="data-[state=active]:bg-background">
               <Users className="h-4 w-4 mr-2" />
               Users
@@ -164,6 +170,11 @@ export default function Settings() {
             <SyncStatusIndicator />
             <NotionDatabaseMapping />
             <StatusValueMapping />
+          </TabsContent>
+
+          {/* Video QC Standards */}
+          <TabsContent value="qc">
+            <QCStandardsManager />
           </TabsContent>
 
           {/* User Management */}

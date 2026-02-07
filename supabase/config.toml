@@ -14,3 +14,9 @@ verify_jwt = false
 
 [functions.analyze-revision]
 verify_jwt = false
+
+[functions.video-qc]
+verify_jwt = false
+
+[functions.frameio]
+verify_jwt = false
