@@ -18,11 +18,12 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink } from 'lucide-react';
+import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Unlink } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
 import { QCFlagsList } from './QCFlagsList';
 import { useVideoUpload } from '@/hooks/useVideoUpload';
 import { useFrameIO } from '@/hooks/useFrameIO';
+import { useLocation } from 'react-router-dom';
 
 interface VideoUploadModalProps {
   open: boolean;
@@ -47,6 +48,8 @@ export function VideoUploadModal({
   const [step, setStep] = useState<Step>('upload');
   const [selectedFrameioProject, setSelectedFrameioProject] = useState<string>('');
   const [manualFeedback, setManualFeedback] = useState<string>('');
+  const [useManualEntry, setUseManualEntry] = useState(false);
+  const location = useLocation();
 
   const {
     upload,
@@ -58,7 +61,15 @@ export function VideoUploadModal({
     reset,
   } = useVideoUpload();
 
-  const { projects: frameioProjects, isLoading: loadingProjects } = useFrameIO();
+  const { 
+    projects: frameioProjects, 
+    isLoading: loadingProjects,
+    isConnected,
+    isConnecting,
+    connect,
+    disconnect,
+    error: frameioError,
+  } = useFrameIO();
 
   // Reset when modal opens/closes
   useEffect(() => {
@@ -67,6 +78,7 @@ export function VideoUploadModal({
       setStep('upload');
       setSelectedFrameioProject('');
       setManualFeedback('');
+      setUseManualEntry(false);
       reset();
     }
   }, [open, reset]);
@@ -111,6 +123,10 @@ export function VideoUploadModal({
     if (link) {
       onComplete?.(link);
     }
+  };
+
+  const handleConnect = () => {
+    connect(location.pathname);
   };
 
   const hasBlockingErrors = upload?.qcResult?.flags.some(
@@ -241,24 +257,84 @@ export function VideoUploadModal({
               </div>
             )}
 
-            <div className="space-y-2">
-              <Label>Frame.io Project</Label>
-              {frameioProjects.length > 0 ? (
-                <Select
-                  value={selectedFrameioProject}
-                  onValueChange={setSelectedFrameioProject}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={loadingProjects ? 'Loading...' : 'Select a project'} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {frameioProjects.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name} ({p.teamName})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            {/* Frame.io Connection Section */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>Frame.io Project</Label>
+                {isConnected ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={disconnect}
+                    className="text-xs h-7"
+                  >
+                    <Unlink className="h-3 w-3 mr-1" />
+                    Disconnect
+                  </Button>
+                ) : null}
+              </div>
+
+              {!isConnected ? (
+                <div className="p-4 border rounded-lg bg-muted/50 space-y-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Link2 className="h-4 w-4 text-muted-foreground" />
+                    <span>Connect your Frame.io account to upload videos</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleConnect}
+                      disabled={isConnecting}
+                      className="flex-1"
+                    >
+                      {isConnecting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          Connecting...
+                        </>
+                      ) : (
+                        <>
+                          <Link2 className="h-4 w-4 mr-2" />
+                          Connect Frame.io
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setUseManualEntry(true)}
+                    >
+                      Use Project ID
+                    </Button>
+                  </div>
+                  {frameioError && (
+                    <p className="text-xs text-destructive">{frameioError}</p>
+                  )}
+                </div>
+              ) : frameioProjects.length > 0 && !useManualEntry ? (
+                <div className="space-y-2">
+                  <Select
+                    value={selectedFrameioProject}
+                    onValueChange={setSelectedFrameioProject}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={loadingProjects ? 'Loading...' : 'Select a project'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {frameioProjects.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name} ({p.teamName})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    onClick={() => setUseManualEntry(true)}
+                    className="text-xs p-0 h-auto"
+                  >
+                    Or enter Project ID manually
+                  </Button>
+                </div>
               ) : (
                 <div className="space-y-2">
                   <Input
@@ -268,12 +344,19 @@ export function VideoUploadModal({
                     className="font-mono text-sm"
                   />
                   <p className="text-xs text-muted-foreground">
-                    {loadingProjects ? 'Loading projects...' : 
-                      'Your Frame.io account uses the newer V4 platform. Paste the full URL or just the Project ID.'}
+                    {loadingProjects && isConnected ? 'Loading projects...' : 
+                      'Paste the full Frame.io URL or just the Project ID (UUID)'}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    <strong>Example:</strong> <code className="bg-muted px-1 rounded">https://next.frame.io/project/d1cb96af-93ec-4235-...</code> or just the UUID
-                  </p>
+                  {frameioProjects.length > 0 && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      onClick={() => setUseManualEntry(false)}
+                      className="text-xs p-0 h-auto"
+                    >
+                      Select from your projects instead
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
@@ -290,7 +373,9 @@ export function VideoUploadModal({
 
         {step === 'complete' && upload?.frameioLink && (
           <div className="flex flex-col items-center justify-center py-8">
-            <CheckCircle2 className="h-12 w-12 text-green-500 mb-4" />
+            <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+              <CheckCircle2 className="h-8 w-8 text-primary" />
+            </div>
             <p className="font-medium text-lg">Upload Complete!</p>
             <p className="text-sm text-muted-foreground mb-4">
               Your video has been uploaded to Frame.io
