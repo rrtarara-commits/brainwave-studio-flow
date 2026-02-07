@@ -8,3 +8,9 @@ verify_jwt = false
 
 [functions.notion-schema]
 verify_jwt = false
+
+[functions.ai-brain]
+verify_jwt = false
+
+[functions.analyze-revision]
+verify_jwt = false
