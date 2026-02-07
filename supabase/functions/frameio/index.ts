@@ -23,6 +23,66 @@ const supabase = createClient(
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
 );
 
+// Cache for OAuth token
+let cachedOAuthToken: { token: string; expiresAt: number } | null = null;
+
+// Get OAuth access token using client credentials
+async function getOAuthToken(): Promise<string> {
+  // Check if we have a valid cached token (with 5 min buffer)
+  if (cachedOAuthToken && cachedOAuthToken.expiresAt > Date.now() + 300000) {
+    console.log('Using cached OAuth token');
+    return cachedOAuthToken.token;
+  }
+
+  const clientId = Deno.env.get('FRAMEIO_CLIENT_ID');
+  const clientSecret = Deno.env.get('FRAMEIO_CLIENT_SECRET');
+
+  if (!clientId || !clientSecret) {
+    // Fall back to developer token if OAuth not configured
+    const devToken = Deno.env.get('FRAMEIO_API_TOKEN');
+    if (devToken) {
+      console.log('Using legacy developer token (OAuth not configured)');
+      return devToken;
+    }
+    throw new Error('Frame.io OAuth credentials (FRAMEIO_CLIENT_ID, FRAMEIO_CLIENT_SECRET) not configured');
+  }
+
+  console.log('Fetching new OAuth token from Adobe IMS...');
+  
+  const tokenUrl = 'https://ims-na1.adobelogin.com/ims/token/v3';
+  const params = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    client_secret: clientSecret,
+    scope: 'openid,AdobeID,read_organizations,frameio.assets,frameio.projects.read,frameio.projects.write',
+  });
+
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: params.toString(),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('OAuth token error:', response.status, errorText);
+    throw new Error(`Failed to get OAuth token: ${response.status}`);
+  }
+
+  const data = await response.json();
+  
+  // Cache the token
+  cachedOAuthToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in * 1000),
+  };
+  
+  console.log('Successfully obtained OAuth token');
+  return data.access_token;
+}
+
 // Frame.io API helper - supports both V2 and V4
 async function frameioRequest(
   endpoint: string,
@@ -30,16 +90,13 @@ async function frameioRequest(
   body?: unknown,
   useV4: boolean = false
 ): Promise<any> {
-  const FRAMEIO_TOKEN = Deno.env.get('FRAMEIO_API_TOKEN');
-  if (!FRAMEIO_TOKEN) {
-    throw new Error('FRAMEIO_API_TOKEN not configured');
-  }
-
+  const token = await getOAuthToken();
   const baseUrl = useV4 ? FRAMEIO_V4_API_BASE : FRAMEIO_API_BASE;
+  
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method,
     headers: {
-      'Authorization': `Bearer ${FRAMEIO_TOKEN}`,
+      'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
