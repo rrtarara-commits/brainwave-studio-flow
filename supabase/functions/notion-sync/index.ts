@@ -20,12 +20,6 @@ interface StatusMapping {
   [appStatus: string]: string;
 }
 
-// Initialize Supabase client
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL') || '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-);
-
 // Fetch all pages from a Notion database with pagination
 async function fetchNotionDatabase(
   databaseId: string,
@@ -259,31 +253,70 @@ function normalizeStatus(status: any, statusMapping: StatusMapping): string {
   return defaultStatusMap[s] || 'active';
 }
 
-// Save last sync timestamp
-async function updateLastSyncTime() {
-  try {
-    await supabase
-      .from('app_config')
-      .upsert({ 
-        key: 'last_notion_sync', 
-        value: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'key' });
-  } catch (error) {
-    console.error('Error updating last sync time:', error);
-  }
-}
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
+    // Authentication check
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return new Response(
+        JSON.stringify({ error: 'Missing authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Create Supabase client with user's JWT for auth validation
+    const userSupabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    // Validate user
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid or expired token' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Check role - only admins can trigger Notion sync
+    const { data: roleData, error: roleError } = await userSupabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (roleError || !roleData) {
+      return new Response(
+        JSON.stringify({ error: 'Unable to verify user role' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (roleData.role !== 'admin') {
+      return new Response(
+        JSON.stringify({ error: 'Insufficient permissions. Admin role required.' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Notion sync triggered by admin: ${user.email}`);
+
     const notionApiKey = Deno.env.get('NOTION_API_KEY');
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is not configured');
     }
+
+    // Initialize service role client for database operations
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') || '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    );
 
     // Check if this is a debug/test request
     const url = new URL(req.url);
@@ -393,7 +426,13 @@ Deno.serve(async (req) => {
     }
 
     // Update last sync time
-    await updateLastSyncTime();
+    await supabase
+      .from('app_config')
+      .upsert({ 
+        key: 'last_notion_sync', 
+        value: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'key' });
 
     return new Response(
       JSON.stringify({

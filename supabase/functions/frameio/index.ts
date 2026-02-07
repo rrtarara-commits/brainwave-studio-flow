@@ -18,11 +18,6 @@ interface FrameIORequest {
 const FRAMEIO_API_BASE = 'https://api.frame.io/v2';
 const FRAMEIO_V4_API_BASE = 'https://api.frame.io/v4';
 
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL') || '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-);
-
 // Cache for OAuth token
 let cachedOAuthToken: { token: string; expiresAt: number } | null = null;
 
@@ -294,17 +289,41 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Auth check
+    // Authentication check
     const authHeader = req.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
+        JSON.stringify({ error: 'Missing authorization header' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
+    // Create Supabase client with user's JWT for auth validation
+    const userSupabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    // Validate user
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid or expired token' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Frame.io request from authenticated user: ${user.email}`);
+
     const body: FrameIORequest = await req.json();
     const { action } = body;
+
+    // Initialize service role client for database operations
+    const serviceClient = createClient(
+      Deno.env.get('SUPABASE_URL') || '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    );
 
     console.log(`Frame.io action: ${action}`);
 
@@ -339,6 +358,29 @@ Deno.serve(async (req) => {
           throw new Error('frameioProjectId, fileName, and uploadId required');
         }
 
+        // Verify user has permission to upload (check if they own this upload record)
+        const { data: uploadRecord } = await serviceClient
+          .from('video_uploads')
+          .select('uploader_id')
+          .eq('id', body.uploadId)
+          .single();
+
+        if (uploadRecord?.uploader_id !== user.id) {
+          // Check if user is admin/producer
+          const { data: roleData } = await userSupabase
+            .from('user_roles')
+            .select('role')
+            .eq('user_id', user.id)
+            .single();
+
+          if (!roleData?.role || !['admin', 'producer'].includes(roleData.role)) {
+            return new Response(
+              JSON.stringify({ error: 'You do not have permission to upload to this record' }),
+              { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+        }
+
         // Get project root asset
         const project = await frameioRequest(`/projects/${body.frameioProjectId}`);
         
@@ -353,7 +395,7 @@ Deno.serve(async (req) => {
         const shareLink = await getShareLink(assetId);
 
         // Update the video upload record
-        await supabase
+        await serviceClient
           .from('video_uploads')
           .update({
             frameio_asset_id: assetId,
@@ -366,7 +408,7 @@ Deno.serve(async (req) => {
 
         // Also update the project record
         if (body.projectId) {
-          await supabase
+          await serviceClient
             .from('projects')
             .update({
               frameio_link: shareLink,

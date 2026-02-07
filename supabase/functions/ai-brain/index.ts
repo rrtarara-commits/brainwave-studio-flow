@@ -16,15 +16,9 @@ interface AIBrainRequest {
   };
 }
 
-// Initialize Supabase client
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL') || '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-);
-
-// Fetch historical project data for context
-async function getProjectContext(): Promise<string> {
-  const { data: projects } = await supabase
+// Fetch historical project data for context (uses service role client)
+async function getProjectContext(serviceClient: any): Promise<string> {
+  const { data: projects } = await serviceClient
     .from('projects')
     .select('*')
     .order('created_at', { ascending: false })
@@ -34,7 +28,7 @@ async function getProjectContext(): Promise<string> {
     return 'No historical project data available.';
   }
 
-  const summary = projects.map(p => 
+  const summary = projects.map((p: any) => 
     `- "${p.title}": Status=${p.status}, Client=${p.client_name || 'Unknown'}, Budget=$${p.client_budget || 0}, ` +
     `BillableRevisions=${p.billable_revisions || 0}, InternalRevisions=${p.internal_revisions || 0}, ` +
     `Format=${p.video_format || 'Unknown'}, SentimentScore=${p.sentiment_score || 0}`
@@ -43,13 +37,13 @@ async function getProjectContext(): Promise<string> {
   return `Historical Project Data (${projects.length} projects):\n${summary}`;
 }
 
-// Fetch crew performance data
-async function getCrewContext(): Promise<string> {
-  const { data: profiles } = await supabase
+// Fetch crew performance data (uses service role client)
+async function getCrewContext(serviceClient: any): Promise<string> {
+  const { data: profiles } = await serviceClient
     .from('profiles')
     .select('id, full_name, email, hourly_rate, friction_score');
 
-  const { data: feedback } = await supabase
+  const { data: feedback } = await serviceClient
     .from('crew_feedback')
     .select('target_user_id, rating, turnaround_days, technical_error_rate');
 
@@ -59,7 +53,7 @@ async function getCrewContext(): Promise<string> {
 
   // Aggregate feedback by user
   const feedbackMap = new Map<string, { ratings: number[]; turnarounds: number[]; errors: number[] }>();
-  (feedback || []).forEach(f => {
+  (feedback || []).forEach((f: any) => {
     if (!feedbackMap.has(f.target_user_id)) {
       feedbackMap.set(f.target_user_id, { ratings: [], turnarounds: [], errors: [] });
     }
@@ -69,16 +63,16 @@ async function getCrewContext(): Promise<string> {
     if (f.technical_error_rate) entry.errors.push(f.technical_error_rate);
   });
 
-  const crewSummary = profiles.map(p => {
+  const crewSummary = profiles.map((p: any) => {
     const fb = feedbackMap.get(p.id);
     const avgRating = fb && fb.ratings.length > 0 
-      ? (fb.ratings.reduce((a, b) => a + b, 0) / fb.ratings.length).toFixed(1) 
+      ? (fb.ratings.reduce((a: number, b: number) => a + b, 0) / fb.ratings.length).toFixed(1) 
       : 'N/A';
     const avgTurnaround = fb && fb.turnarounds.length > 0
-      ? (fb.turnarounds.reduce((a, b) => a + b, 0) / fb.turnarounds.length).toFixed(1)
+      ? (fb.turnarounds.reduce((a: number, b: number) => a + b, 0) / fb.turnarounds.length).toFixed(1)
       : 'N/A';
     const avgErrorRate = fb && fb.errors.length > 0
-      ? (fb.errors.reduce((a, b) => a + b, 0) / fb.errors.length).toFixed(1)
+      ? (fb.errors.reduce((a: number, b: number) => a + b, 0) / fb.errors.length).toFixed(1)
       : 'N/A';
     
     return `- ${p.full_name || p.email}: Rate=$${p.hourly_rate || 0}/hr, FrictionScore=${p.friction_score || 0}, ` +
@@ -88,9 +82,9 @@ async function getCrewContext(): Promise<string> {
   return `Crew Performance Data:\n${crewSummary}`;
 }
 
-// Fetch work logs for cost analysis
-async function getWorkLogContext(): Promise<string> {
-  const { data: logs } = await supabase
+// Fetch work logs for cost analysis (uses service role client)
+async function getWorkLogContext(serviceClient: any): Promise<string> {
+  const { data: logs } = await serviceClient
     .from('work_logs')
     .select('project_id, hours, task_type, logged_at')
     .order('logged_at', { ascending: false })
@@ -102,7 +96,7 @@ async function getWorkLogContext(): Promise<string> {
 
   // Aggregate by project
   const projectHours = new Map<string, number>();
-  logs.forEach(log => {
+  logs.forEach((log: any) => {
     const current = projectHours.get(log.project_id) || 0;
     projectHours.set(log.project_id, current + (log.hours || 0));
   });
@@ -168,6 +162,52 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Authentication check
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return new Response(
+        JSON.stringify({ error: 'Missing authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Create Supabase client with user's JWT for auth validation
+    const userSupabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    // Validate user
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid or expired token' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Check role - only admins and producers can access AI Brain
+    const { data: roleData, error: roleError } = await userSupabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (roleError || !roleData) {
+      return new Response(
+        JSON.stringify({ error: 'Unable to verify user role' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!['admin', 'producer'].includes(roleData.role)) {
+      return new Response(
+        JSON.stringify({ error: 'Insufficient permissions. Admin or Producer role required.' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     if (!LOVABLE_API_KEY) {
       throw new Error('LOVABLE_API_KEY is not configured');
@@ -176,13 +216,19 @@ Deno.serve(async (req) => {
     const body: AIBrainRequest = await req.json();
     const { type, messages = [], context = {} } = body;
 
-    console.log(`AI Brain request: type=${type}`);
+    console.log(`AI Brain request from ${user.email}: type=${type}`);
+
+    // Use service role client for data fetching
+    const serviceClient = createClient(
+      Deno.env.get('SUPABASE_URL') || '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    );
 
     // Gather context data in parallel
     const [projectContext, crewContext, workLogContext] = await Promise.all([
-      getProjectContext(),
-      getCrewContext(),
-      getWorkLogContext(),
+      getProjectContext(serviceClient),
+      getCrewContext(serviceClient),
+      getWorkLogContext(serviceClient),
     ]);
 
     // Build context message
@@ -190,7 +236,7 @@ Deno.serve(async (req) => {
 
     // Add specific context if provided
     if (context.projectId) {
-      const { data: project } = await supabase
+      const { data: project } = await serviceClient
         .from('projects')
         .select('*')
         .eq('id', context.projectId)

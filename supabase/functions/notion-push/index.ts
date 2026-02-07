@@ -13,12 +13,6 @@ interface PushRequest {
   notion_id?: string;
 }
 
-// Initialize Supabase client
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL') || '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-);
-
 // Map app status back to Notion status
 // Note: These must match EXACTLY what exists in your Notion "Status 1" property
 function mapStatusToNotion(status: string): string {
@@ -211,10 +205,64 @@ Deno.serve(async (req) => {
   }
 
   try {
+    // Authentication check
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      return new Response(
+        JSON.stringify({ error: 'Missing authorization header' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Create Supabase client with user's JWT for auth validation
+    const userSupabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    );
+
+    // Validate user
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid or expired token' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Check role - only admins and producers can push to Notion
+    const { data: roleData, error: roleError } = await userSupabase
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
+
+    if (roleError || !roleData) {
+      return new Response(
+        JSON.stringify({ error: 'Unable to verify user role' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!['admin', 'producer'].includes(roleData.role)) {
+      return new Response(
+        JSON.stringify({ error: 'Insufficient permissions. Admin or Producer role required.' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Notion push from ${user.email} (${roleData.role})`);
+
     const notionApiKey = Deno.env.get('NOTION_API_KEY');
     if (!notionApiKey) {
       throw new Error('NOTION_API_KEY is not configured');
     }
+
+    // Initialize service role client for database operations
+    const serviceClient = createClient(
+      Deno.env.get('SUPABASE_URL') || '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    );
 
     const body: PushRequest = await req.json();
     console.log(`Received push request:`, JSON.stringify(body));
@@ -259,7 +307,7 @@ Deno.serve(async (req) => {
 
     } else if (body.type === 'work_log') {
       // Create new work log entry in Notion
-      const { data: configs } = await supabase
+      const { data: configs } = await serviceClient
         .from('app_config')
         .select('key, value')
         .eq('key', 'notion_logs_db')
