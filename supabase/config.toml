@@ -1,1 +1,4 @@
 project_id = "hdytpmbgrhaxyjvvpewy"
+
+[functions.notion-sync]
+verify_jwt = false
