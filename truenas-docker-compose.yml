@@ -12,8 +12,8 @@ services:
       TRUENAS_CALLBACK_SECRET: ${TRUENAS_CALLBACK_SECRET}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       
-      # Optional
-      POLL_INTERVAL: '60'
+      # Optional - 15 second polling for near-immediate pickup
+      POLL_INTERVAL: '15'
       TEMP_DIR: '/tmp/video-analysis'
       FFMPEG_PATH: 'ffmpeg'
       FFPROBE_PATH: 'ffprobe'
