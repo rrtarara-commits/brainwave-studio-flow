@@ -161,30 +161,40 @@ function getTitleProperty(props: Record<string, any>): string {
 // Process Projects database with flexible property mapping
 function mapProjectFromNotion(page: NotionPage): any {
   const props = page.properties;
-  const allProps = Object.keys(props);
   
   // Get title (always exists in some form)
   const title = getTitleProperty(props);
   
-  // Flexibly find other properties
-  const status = findProperty(props, 'Status', 'State', 'Phase') || 'active';
-  const clientName = findProperty(props, 'Client', 'ClientName', 'Client Name', 'Customer');
-  const clientBudget = findProperty(props, 'Budget', 'ClientBudget', 'Client Budget', 'Amount', 'Value');
-  const videoFormat = findProperty(props, 'Format', 'VideoFormat', 'Video Format', 'Type');
+  // Flexibly find properties - ordered by specificity to match your Notion database
+  // Status: Check "Status 1" (status type) first, then "Status" (multi_select)
+  const status = findProperty(props, 'Status 1', 'Status', 'State', 'Phase') || 'active';
+  
+  // Client: Check formula first (has resolved name), then relations
+  const clientName = findProperty(props, 'Billable Client (zapier)', 'Billable Client *', '🤑 Clients', 'Client', 'ClientName', 'Client Name', 'Customer');
+  
+  // Budget and format
+  const clientBudget = findProperty(props, 'Client Budget', 'Budget', 'Amount', 'Value');
+  const videoFormat = findProperty(props, 'Video Format', 'Format', 'VideoFormat', 'Type');
+  
+  // Revisions
   const billableRevisions = findProperty(props, 'BillableRevisions', 'Billable Revisions', 'Billable');
   const internalRevisions = findProperty(props, 'InternalRevisions', 'Internal Revisions', 'Internal');
   
-  return {
+  const mapped = {
     notion_id: page.id,
     title: title || 'Untitled',
     status: normalizeStatus(status),
-    client_name: clientName,
+    client_name: typeof clientName === 'string' ? clientName : (Array.isArray(clientName) ? clientName[0] : null),
     client_budget: typeof clientBudget === 'number' ? clientBudget : 0,
     video_format: videoFormat,
     billable_revisions: typeof billableRevisions === 'number' ? billableRevisions : 0,
     internal_revisions: typeof internalRevisions === 'number' ? internalRevisions : 0,
     sentiment_score: 0,
   };
+  
+  console.log(`Mapped project "${title}": status=${mapped.status}, client=${mapped.client_name}`);
+  
+  return mapped;
 }
 
 // Normalize status to match our enum
@@ -194,6 +204,7 @@ function normalizeStatus(status: any): string {
   
   const statusMap: Record<string, string> = {
     'active': 'active',
+    'inactive': 'on_hold',
     'inprogress': 'in_progress',
     'readyforedit': 'ready_for_edit',
     'inrevision': 'in_revision',
