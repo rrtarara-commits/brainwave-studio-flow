@@ -308,7 +308,8 @@ Deno.serve(async (req) => {
         const authUrl = new URL(ADOBE_IMS_AUTH_URL);
         authUrl.searchParams.set('client_id', clientId);
         authUrl.searchParams.set('redirect_uri', redirectUri);
-        authUrl.searchParams.set('scope', 'openid,AdobeID,frameio.assets,frameio.projects.read,frameio.projects.write');
+        // Adobe IMS requires space-separated scopes; 'offline_access' enables refresh tokens
+        authUrl.searchParams.set('scope', 'openid AdobeID offline_access');
         authUrl.searchParams.set('response_type', 'code');
         authUrl.searchParams.set('state', state);
 
