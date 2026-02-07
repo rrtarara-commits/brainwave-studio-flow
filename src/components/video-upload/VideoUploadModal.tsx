@@ -94,11 +94,19 @@ export function VideoUploadModal({
     await uploadVideo(file, projectId, clientName, feedbackItems.length > 0 ? feedbackItems : undefined);
   };
 
+  // Extract Frame.io project ID from URL or raw ID
+  const extractFrameioProjectId = (input: string): string => {
+    // Match UUID pattern in the input (handles full URLs or raw IDs)
+    const uuidMatch = input.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
+    return uuidMatch ? uuidMatch[0] : input.trim();
+  };
+
   const handleSubmit = async () => {
     if (!selectedFrameioProject) return;
     
+    const projectIdToUse = extractFrameioProjectId(selectedFrameioProject);
     setStep('submit');
-    const link = await submitToFrameio(selectedFrameioProject);
+    const link = await submitToFrameio(projectIdToUse);
     
     if (link) {
       onComplete?.(link);
@@ -256,15 +264,15 @@ export function VideoUploadModal({
                   <Input
                     value={selectedFrameioProject}
                     onChange={(e) => setSelectedFrameioProject(e.target.value)}
-                    placeholder="Enter Frame.io Project ID"
+                    placeholder="Paste Frame.io URL or Project ID"
                     className="font-mono text-sm"
                   />
                   <p className="text-xs text-muted-foreground">
                     {loadingProjects ? 'Loading projects...' : 
-                      'Your Frame.io account uses the newer V4 platform. Enter your Project ID manually.'}
+                      'Your Frame.io account uses the newer V4 platform. Paste the full URL or just the Project ID.'}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    <strong>How to find it:</strong> Open your project in Frame.io → Copy the ID from the URL after <code className="bg-muted px-1 rounded">/projects/</code>
+                    <strong>Example:</strong> <code className="bg-muted px-1 rounded">https://next.frame.io/project/d1cb96af-93ec-4235-...</code> or just the UUID
                   </p>
                 </div>
               )}
