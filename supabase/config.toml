@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.notion-push]
 verify_jwt = false
+
+[functions.notion-schema]
+verify_jwt = false
