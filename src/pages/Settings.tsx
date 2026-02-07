@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { UserManagement } from '@/components/settings/UserManagement';
+import { notionSyncApi } from '@/lib/api/notion-sync';
 import {
   Database,
   Link,
@@ -18,6 +19,7 @@ import {
   Loader2,
   Save,
   Users,
+  RefreshCw,
 } from 'lucide-react';
 
 export default function Settings() {
@@ -25,6 +27,7 @@ export default function Settings() {
   const [config, setConfig] = useState<AppConfig[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [testingKey, setTestingKey] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, boolean | null>>({});
 
@@ -83,6 +86,35 @@ export default function Settings() {
       });
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleNotionSync = async () => {
+    setIsSyncing(true);
+    try {
+      const result = await notionSyncApi.triggerSync();
+      
+      if (result.success) {
+        toast({
+          title: 'Sync triggered',
+          description: 'Notion data is being synced to your database',
+        });
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'Sync failed',
+          description: result.error || 'Failed to sync Notion data',
+        });
+      }
+    } catch (error) {
+      console.error('Error triggering sync:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Failed to trigger sync',
+      });
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -165,18 +197,32 @@ export default function Settings() {
               Configure your studio portal
             </p>
           </div>
-          <Button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="bg-primary hover:bg-primary/90"
-          >
-            {isSaving ? (
-              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-            ) : (
-              <Save className="h-4 w-4 mr-2" />
-            )}
-            Save Changes
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              onClick={handleNotionSync}
+              disabled={isSyncing}
+              variant="outline"
+            >
+              {isSyncing ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Sync Notion
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={isSaving}
+              className="bg-primary hover:bg-primary/90"
+            >
+              {isSaving ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <Save className="h-4 w-4 mr-2" />
+              )}
+              Save Changes
+            </Button>
+          </div>
         </div>
 
         <Tabs defaultValue="users" className="space-y-4">
