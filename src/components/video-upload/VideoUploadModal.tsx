@@ -34,7 +34,7 @@ interface VideoUploadModalProps {
   onComplete?: (frameioLink: string) => void;
 }
 
-type Step = 'upload' | 'review' | 'submit' | 'complete';
+type Step = 'connect' | 'upload' | 'review' | 'submit' | 'complete';
 
 export function VideoUploadModal({
   open,
@@ -75,13 +75,22 @@ export function VideoUploadModal({
   useEffect(() => {
     if (!open) {
       setSelectedFile(null);
-      setStep('upload');
+      setStep(isConnected ? 'upload' : 'connect');
       setSelectedFrameioProject('');
       setManualFeedback('');
       setUseManualEntry(false);
       reset();
     }
-  }, [open, reset]);
+  }, [open, reset, isConnected]);
+
+  // Set initial step based on connection status
+  useEffect(() => {
+    if (open && step === 'connect' && isConnected) {
+      setStep('upload');
+    } else if (open && step === 'upload' && !isConnected && !loadingProjects) {
+      setStep('connect');
+    }
+  }, [open, isConnected, loadingProjects, step]);
 
   // Update step based on upload status
   useEffect(() => {
@@ -135,10 +144,11 @@ export function VideoUploadModal({
 
   const getStepNumber = () => {
     switch (step) {
-      case 'upload': return 1;
-      case 'review': return 2;
-      case 'submit': return 3;
-      case 'complete': return 4;
+      case 'connect': return 1;
+      case 'upload': return 2;
+      case 'review': return 3;
+      case 'submit': return 4;
+      case 'complete': return 5;
     }
   };
 
@@ -157,10 +167,10 @@ export function VideoUploadModal({
 
         {/* Progress Steps */}
         <div className="flex items-center justify-between mb-4">
-          {['Upload', 'AI Review', 'Submit', 'Complete'].map((label, i) => (
+          {['Connect', 'Upload', 'AI Review', 'Submit', 'Complete'].map((label, i) => (
             <div key={label} className="flex items-center">
               <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+                className={`w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-medium ${
                   getStepNumber() > i + 1
                     ? 'bg-primary text-primary-foreground'
                     : getStepNumber() === i + 1
@@ -168,15 +178,55 @@ export function VideoUploadModal({
                     : 'bg-muted text-muted-foreground'
                 }`}
               >
-                {getStepNumber() > i + 1 ? <CheckCircle2 className="h-4 w-4" /> : i + 1}
+                {getStepNumber() > i + 1 ? <CheckCircle2 className="h-3 w-3 sm:h-4 sm:w-4" /> : i + 1}
               </div>
-              <span className="ml-2 text-sm hidden sm:inline">{label}</span>
-              {i < 3 && <div className="w-8 h-px bg-border mx-2" />}
+              <span className="ml-1 sm:ml-2 text-xs sm:text-sm hidden md:inline">{label}</span>
+              {i < 4 && <div className="w-4 sm:w-8 h-px bg-border mx-1 sm:mx-2" />}
             </div>
           ))}
         </div>
 
         {/* Step Content */}
+        {step === 'connect' && (
+          <div className="space-y-4">
+            <div className="text-center py-6">
+              <div className="h-16 w-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-4">
+                <Link2 className="h-8 w-8 text-muted-foreground" />
+              </div>
+              <h3 className="text-lg font-semibold mb-2">Connect Frame.io First</h3>
+              <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                Before uploading videos, you'll need to connect your Frame.io account so we know where to send them.
+              </p>
+            </div>
+
+            <div className="p-4 border rounded-lg bg-muted/50 space-y-3">
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleConnect}
+                  disabled={isConnecting}
+                  className="flex-1"
+                  size="lg"
+                >
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      Connecting...
+                    </>
+                  ) : (
+                    <>
+                      <Link2 className="h-4 w-4 mr-2" />
+                      Connect Frame.io
+                    </>
+                  )}
+                </Button>
+              </div>
+              {frameioError && (
+                <p className="text-xs text-destructive text-center">{frameioError}</p>
+              )}
+            </div>
+          </div>
+        )}
+
         {step === 'upload' && (
           <div className="space-y-4">
             <Tabs defaultValue="upload">
@@ -236,8 +286,10 @@ export function VideoUploadModal({
               <div className="flex-1">
                 <p className="font-medium">AI Analysis Complete</p>
                 <p className="text-xs text-muted-foreground">
-                  {upload.qcResult.thoughtTrace.standardsChecked} standards checked • 
-                  {upload.qcResult.thoughtTrace.feedbackItemsReviewed} feedback items reviewed
+                  {upload.qcResult.thoughtTrace.standardsChecked} standards • 
+                  {upload.qcResult.thoughtTrace.feedbackItemsReviewed} feedback items • 
+                  {upload.qcResult.thoughtTrace.visualFramesAnalyzed > 0 ? 'Visual ✓' : ''} 
+                  {upload.qcResult.thoughtTrace.audioAnalyzed ? ' Audio ✓' : ''}
                 </p>
               </div>
             </div>
@@ -257,59 +309,17 @@ export function VideoUploadModal({
               </div>
             )}
 
-            {/* Frame.io Connection Section */}
+            {/* Frame.io Project Selection - Already connected */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <Label>Frame.io Project</Label>
-                {isConnected ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={disconnect}
-                    className="text-xs h-7"
-                  >
-                    <Unlink className="h-3 w-3 mr-1" />
-                    Disconnect
-                  </Button>
-                ) : null}
+                <Label>Select Frame.io Project</Label>
+                <div className="flex items-center gap-2 text-xs text-primary">
+                  <CheckCircle2 className="h-3 w-3" />
+                  Connected
+                </div>
               </div>
 
-              {!isConnected ? (
-                <div className="p-4 border rounded-lg bg-muted/50 space-y-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <Link2 className="h-4 w-4 text-muted-foreground" />
-                    <span>Connect your Frame.io account to upload videos</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={handleConnect}
-                      disabled={isConnecting}
-                      className="flex-1"
-                    >
-                      {isConnecting ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          Connecting...
-                        </>
-                      ) : (
-                        <>
-                          <Link2 className="h-4 w-4 mr-2" />
-                          Connect Frame.io
-                        </>
-                      )}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={() => setUseManualEntry(true)}
-                    >
-                      Use Project ID
-                    </Button>
-                  </div>
-                  {frameioError && (
-                    <p className="text-xs text-destructive">{frameioError}</p>
-                  )}
-                </div>
-              ) : frameioProjects.length > 0 && !useManualEntry ? (
+              {frameioProjects.length > 0 && !useManualEntry ? (
                 <div className="space-y-2">
                   <Select
                     value={selectedFrameioProject}
@@ -344,7 +354,7 @@ export function VideoUploadModal({
                     className="font-mono text-sm"
                   />
                   <p className="text-xs text-muted-foreground">
-                    {loadingProjects && isConnected ? 'Loading projects...' : 
+                    {loadingProjects ? 'Loading projects...' : 
                       'Paste the full Frame.io URL or just the Project ID (UUID)'}
                   </p>
                   {frameioProjects.length > 0 && (
