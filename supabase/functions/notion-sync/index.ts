@@ -268,6 +268,8 @@ Deno.serve(async (req) => {
       );
     }
 
+    const token = authHeader.replace('Bearer ', '');
+
     // Create Supabase client with user's JWT for auth validation
     const userSupabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -275,8 +277,8 @@ Deno.serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } }
     );
 
-    // Validate user
-    const { data: { user }, error: authError } = await userSupabase.auth.getUser();
+    // Validate user - MUST pass token explicitly when verify_jwt=false
+    const { data: { user }, error: authError } = await userSupabase.auth.getUser(token);
     if (authError || !user) {
       return new Response(
         JSON.stringify({ error: 'Invalid or expired token' }),
