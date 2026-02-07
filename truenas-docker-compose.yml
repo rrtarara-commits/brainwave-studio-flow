@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  video-analyzer:
+    build:
+      context: .
+      dockerfile: truenas-analyzer-Dockerfile
+    container_name: tcv-deep-analyzer
+    environment:
+      # Required
+      SUPABASE_URL: https://hdytpmbgrhaxyjvvpewy.supabase.co
+      TRUENAS_CALLBACK_SECRET: ${TRUENAS_CALLBACK_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      
+      # Optional
+      POLL_INTERVAL: '60'
+      TEMP_DIR: '/tmp/video-analysis'
+      FFMPEG_PATH: 'ffmpeg'
+      FFPROBE_PATH: 'ffprobe'
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    
+    # Restart policy
+    restart: unless-stopped
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Volumes for temp storage
+    volumes:
+      - analyzer-temp:/tmp/video-analysis
+
+volumes:
+  analyzer-temp:
+    driver: local
