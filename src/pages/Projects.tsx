@@ -615,7 +615,8 @@ export default function Projects() {
           onOpenChange={setUploadModalOpen}
           projectId={uploadProject.id}
           projectTitle={uploadProject.title}
-          clientName={uploadProject.client_name}
+          clientName={uploadProject.client_name || undefined}
+          projectCode={(uploadProject as any).project_code}
           onComplete={(link) => handleUploadComplete(uploadProject.id, link)}
         />
       )}
