@@ -16,6 +16,7 @@ interface QCRequest {
   storagePath: string;
   clientName?: string;
   frameioFeedback?: string[];
+  analysisMode?: 'quick' | 'thorough';
 }
 
 interface QCFlag {
@@ -118,12 +119,13 @@ async function getGCSAccessToken(): Promise<string | null> {
   }
 }
 
-// Copy file from Supabase Storage to GCS
+// Copy file from Supabase Storage to GCS with analysis mode metadata
 async function copyToGCS(
   serviceClient: any,
   storagePath: string,
   uploadId: string,
-  fileName: string
+  fileName: string,
+  analysisMode: string = 'thorough'
 ): Promise<boolean> {
   try {
     console.log(`Copying ${storagePath} to GCS uploads/${uploadId}/${fileName}`);
@@ -145,14 +147,45 @@ async function copyToGCS(
       return false;
     }
 
-    // Upload to GCS
+    // Upload to GCS with metadata
     const gcsPath = `uploads/${uploadId}/${fileName}`;
-    const uploadUrl = `${GCS_API_URL}/${GCS_BUCKET}/o?uploadType=media&name=${encodeURIComponent(gcsPath)}`;
-
-    const uploadResponse = await fetch(uploadUrl, {
+    
+    // Use resumable upload to set metadata
+    const initUrl = `${GCS_API_URL}/${GCS_BUCKET}/o?uploadType=resumable&name=${encodeURIComponent(gcsPath)}`;
+    
+    // First, initiate resumable upload with metadata
+    const initResponse = await fetch(initUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'X-Upload-Content-Type': 'video/mp4',
+      },
+      body: JSON.stringify({
+        name: gcsPath,
+        metadata: {
+          analysis_mode: analysisMode,
+        },
+      }),
+    });
+
+    if (!initResponse.ok) {
+      const errorText = await initResponse.text();
+      console.error('GCS resumable init failed:', initResponse.status, errorText);
+      return false;
+    }
+
+    // Get the upload URL from the response header
+    const uploadUrl = initResponse.headers.get('Location');
+    if (!uploadUrl) {
+      console.error('No upload URL returned from GCS');
+      return false;
+    }
+
+    // Upload the actual file
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
         'Content-Type': 'video/mp4',
       },
       body: fileData,
@@ -406,7 +439,7 @@ Deno.serve(async (req) => {
     }
 
     const body: QCRequest = await req.json();
-    const { uploadId, projectId, fileName, storagePath, clientName, frameioFeedback } = body;
+    const { uploadId, projectId, fileName, storagePath, clientName, frameioFeedback, analysisMode } = body;
 
     // Verify the user is the uploader or has permission (admin/producer)
     const { data: roleData } = await userSupabase
@@ -493,10 +526,11 @@ Deno.serve(async (req) => {
     console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags`);
 
     // Copy file to GCS to trigger deep analysis (runs in background)
+    const mode = analysisMode || 'thorough';
     EdgeRuntime.waitUntil(
       (async () => {
-        console.log('Starting background GCS upload...');
-        const gcsCopySuccess = await copyToGCS(serviceClient, storagePath, uploadId, fileName);
+        console.log(`Starting background GCS upload (mode: ${mode})...`);
+        const gcsCopySuccess = await copyToGCS(serviceClient, storagePath, uploadId, fileName, mode);
         if (gcsCopySuccess) {
           console.log(`GCS upload complete for ${uploadId}, deep analysis will be triggered`);
           await serviceClient

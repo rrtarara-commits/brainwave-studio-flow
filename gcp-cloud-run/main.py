@@ -1,6 +1,7 @@
 """
 TCV Video QC Analyzer - Cloud Run Service
 Event-driven video analysis pipeline using FFmpeg and Vertex AI (Gemini)
+Supports Quick (fast) and Thorough (comprehensive) analysis modes
 """
 
 import os
@@ -11,9 +12,6 @@ import tempfile
 import subprocess
 import requests
 from flask import Flask, request, jsonify
-from google.cloud import storage
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part
 from google.cloud import storage
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
@@ -33,6 +31,11 @@ DIALOGUE_TOLERANCE_DB = 3.0
 PEAK_ERROR_THRESHOLD_DB = -0.5
 PEAK_WARNING_THRESHOLD_DB = -1.0
 
+# Analysis mode settings
+QUICK_MODE_FRAMES = 5
+THOROUGH_MODE_FRAMES = 15
+SCENE_CHANGE_THRESHOLD = 0.3  # Lower = more sensitive
+
 # Initialize Vertex AI
 vertexai.init(project=PROJECT_ID, location="us-central1")
 
@@ -50,11 +53,8 @@ def download_video(bucket_name: str, blob_name: str, temp_dir: str) -> str:
     return local_path
 
 
-def extract_frames(video_path: str, temp_dir: str, num_frames: int = 10) -> list[str]:
-    """Extract keyframes from video using FFmpeg."""
-    frame_paths = []
-    
-    # Get video duration
+def get_video_duration(video_path: str) -> float:
+    """Get video duration in seconds."""
     duration_cmd = [
         'ffprobe', '-v', 'error',
         '-show_entries', 'format=duration',
@@ -64,15 +64,177 @@ def extract_frames(video_path: str, temp_dir: str, num_frames: int = 10) -> list
     
     try:
         result = subprocess.run(duration_cmd, capture_output=True, text=True, timeout=60)
-        duration = float(result.stdout.strip())
+        return float(result.stdout.strip())
     except (subprocess.TimeoutExpired, ValueError):
-        duration = 60.0  # Default to 60 seconds if detection fails
+        return 60.0  # Default to 60 seconds if detection fails
+
+
+def detect_scene_changes(video_path: str, threshold: float = 0.3) -> list[float]:
+    """Detect scene change timestamps using FFmpeg."""
+    cmd = [
+        'ffmpeg', '-i', video_path,
+        '-vf', f'select=\'gt(scene,{threshold})\',showinfo',
+        '-f', 'null', '-'
+    ]
     
-    # Calculate timestamps for frame extraction
-    interval = duration / (num_frames + 1)
+    scene_timestamps = []
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        stderr = result.stderr
+        
+        # Parse timestamps from showinfo output
+        for line in stderr.split('\n'):
+            if 'pts_time:' in line:
+                try:
+                    pts_match = re.search(r'pts_time:(\d+\.?\d*)', line)
+                    if pts_match:
+                        scene_timestamps.append(float(pts_match.group(1)))
+                except ValueError:
+                    pass
+        
+        print(f"Detected {len(scene_timestamps)} scene changes")
+        return scene_timestamps
+        
+    except subprocess.TimeoutExpired:
+        print("Scene detection timeout")
+        return []
+
+
+def detect_flash_frames(video_path: str) -> list[dict]:
+    """Detect flash frames (sudden brightness spikes) using FFmpeg."""
+    issues = []
     
-    for i in range(1, num_frames + 1):
-        timestamp = interval * i
+    # Use the showinfo filter to detect sudden luminance changes
+    cmd = [
+        'ffmpeg', '-i', video_path,
+        '-vf', 'select=\'gt(scene,0.8)\',showinfo',
+        '-f', 'null', '-'
+    ]
+    
+    flash_timestamps = []
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        stderr = result.stderr
+        
+        for line in stderr.split('\n'):
+            if 'pts_time:' in line:
+                try:
+                    pts_match = re.search(r'pts_time:(\d+\.?\d*)', line)
+                    if pts_match:
+                        flash_timestamps.append(float(pts_match.group(1)))
+                except ValueError:
+                    pass
+        
+        if flash_timestamps:
+            issues.append({
+                'type': 'warning',
+                'category': 'Flash Frames',
+                'title': f'{len(flash_timestamps)} potential flash frames detected',
+                'description': f'Found sudden brightness changes at: {", ".join([f"{t:.1f}s" for t in flash_timestamps[:10]])}{"..." if len(flash_timestamps) > 10 else ""}. Review for unintended flashes.',
+                'timestamp': flash_timestamps[0] if flash_timestamps else None
+            })
+        
+        print(f"Detected {len(flash_timestamps)} potential flash frames")
+        
+    except subprocess.TimeoutExpired:
+        issues.append({
+            'type': 'warning',
+            'category': 'Analysis',
+            'title': 'Flash frame detection timeout',
+            'description': 'Flash frame analysis took too long.',
+            'timestamp': None
+        })
+    
+    return issues
+
+
+def detect_freeze_frames(video_path: str) -> list[dict]:
+    """Detect freeze frames (duplicate frames) using FFmpeg."""
+    issues = []
+    
+    cmd = [
+        'ffmpeg', '-i', video_path,
+        '-vf', 'freezedetect=n=0.003:d=0.5',
+        '-f', 'null', '-'
+    ]
+    
+    freeze_segments = []
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        stderr = result.stderr
+        
+        for line in stderr.split('\n'):
+            if 'freeze_start' in line:
+                try:
+                    start_match = re.search(r'freeze_start:\s*(\d+\.?\d*)', line)
+                    if start_match:
+                        freeze_segments.append(float(start_match.group(1)))
+                except ValueError:
+                    pass
+        
+        if len(freeze_segments) > 2:
+            issues.append({
+                'type': 'warning',
+                'category': 'Freeze Frames',
+                'title': f'{len(freeze_segments)} freeze frame sequences detected',
+                'description': f'Found frozen video at: {", ".join([f"{t:.1f}s" for t in freeze_segments[:5]])}{"..." if len(freeze_segments) > 5 else ""}. Verify these are intentional.',
+                'timestamp': freeze_segments[0] if freeze_segments else None
+            })
+        
+        print(f"Detected {len(freeze_segments)} freeze frame segments")
+        
+    except subprocess.TimeoutExpired:
+        issues.append({
+            'type': 'warning',
+            'category': 'Analysis',
+            'title': 'Freeze frame detection timeout',
+            'description': 'Freeze frame analysis took too long.',
+            'timestamp': None
+        })
+    
+    return issues
+
+
+def extract_frames_smart(video_path: str, temp_dir: str, mode: str = 'thorough') -> list[str]:
+    """Extract frames using smart sampling based on scene changes."""
+    frame_paths = []
+    duration = get_video_duration(video_path)
+    
+    if mode == 'quick':
+        # Quick mode: uniform sampling with fewer frames
+        num_frames = QUICK_MODE_FRAMES
+        interval = duration / (num_frames + 1)
+        timestamps = [interval * i for i in range(1, num_frames + 1)]
+    else:
+        # Thorough mode: combine uniform sampling with scene-change sampling
+        scene_changes = detect_scene_changes(video_path, SCENE_CHANGE_THRESHOLD)
+        
+        # Start with uniform samples
+        num_uniform = THOROUGH_MODE_FRAMES // 2
+        interval = duration / (num_uniform + 1)
+        uniform_timestamps = [interval * i for i in range(1, num_uniform + 1)]
+        
+        # Add frames around scene changes (just after the cut)
+        scene_timestamps = []
+        for sc in scene_changes[:10]:  # Limit to first 10 scene changes
+            # Sample just after the cut to catch glitches at transitions
+            if sc + 0.1 < duration:
+                scene_timestamps.append(sc + 0.1)
+        
+        # Merge and deduplicate (keep unique timestamps at least 0.5s apart)
+        all_timestamps = sorted(set(uniform_timestamps + scene_timestamps))
+        timestamps = []
+        last_ts = -1
+        for ts in all_timestamps:
+            if ts - last_ts >= 0.5:
+                timestamps.append(ts)
+                last_ts = ts
+        
+        timestamps = timestamps[:THOROUGH_MODE_FRAMES]  # Cap at max frames
+    
+    print(f"Extracting {len(timestamps)} frames in {mode} mode")
+    
+    for i, timestamp in enumerate(timestamps):
         frame_path = os.path.join(temp_dir, f"frame_{i:03d}.jpg")
         
         extract_cmd = [
@@ -206,7 +368,7 @@ def detect_black_frames(video_path: str) -> list[dict]:
     
     cmd = [
         'ffmpeg', '-i', video_path,
-        '-vf', 'blackdetect=d=0.5:pix_th=0.10',
+        '-vf', 'blackdetect=d=0.1:pix_th=0.10',  # Reduced duration to catch brief black frames
         '-an', '-f', 'null', '-'
     ]
     
@@ -226,9 +388,9 @@ def detect_black_frames(video_path: str) -> list[dict]:
         if len(black_segments) > 3:
             issues.append({
                 'type': 'warning',
-                'category': 'Visual Continuity',
-                'title': 'Multiple black frame sequences detected',
-                'description': f'Found {len(black_segments)} black segments. Timestamps: {", ".join([f"{t:.1f}s" for t in black_segments[:5]])}{"..." if len(black_segments) > 5 else ""}',
+                'category': 'Black Frames',
+                'title': f'{len(black_segments)} black frame sequences detected',
+                'description': f'Found black segments at: {", ".join([f"{t:.1f}s" for t in black_segments[:5]])}{"..." if len(black_segments) > 5 else ""}',
                 'timestamp': black_segments[0] if black_segments else None
             })
         
@@ -244,7 +406,7 @@ def detect_black_frames(video_path: str) -> list[dict]:
     return issues
 
 
-def analyze_with_gemini(frame_paths: list[str], file_name: str) -> dict:
+def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'thorough') -> dict:
     """Analyze frames using Vertex AI Gemini for creative/quality issues."""
     if not frame_paths:
         return {
@@ -257,9 +419,13 @@ def analyze_with_gemini(frame_paths: list[str], file_name: str) -> dict:
     try:
         model = GenerativeModel("gemini-2.0-flash")
         
+        # Limit frames based on mode
+        max_frames = 5 if mode == 'quick' else 8
+        frames_to_analyze = frame_paths[:max_frames]
+        
         # Load frames as base64
         frame_parts = []
-        for path in frame_paths[:5]:  # Limit to 5 frames for cost efficiency
+        for path in frames_to_analyze:
             with open(path, 'rb') as f:
                 frame_data = f.read()
                 frame_parts.append(Part.from_data(frame_data, mime_type="image/jpeg"))
@@ -267,14 +433,15 @@ def analyze_with_gemini(frame_paths: list[str], file_name: str) -> dict:
         prompt = """You are a professional video QC specialist. Analyze these frames from a video file and identify any quality issues.
 
 Check for:
-1. **Visual Glitches**: artifacts, compression issues, banding, blocking
-2. **Color Issues**: incorrect white balance, oversaturation, color banding, inconsistent grading
+1. **Visual Glitches**: artifacts, compression issues, banding, blocking, interlacing
+2. **Color Issues**: incorrect white balance, oversaturation, color banding, inconsistent grading between shots
 3. **Exposure Problems**: blown highlights, crushed blacks, underexposure
-4. **Framing Issues**: unintended letterboxing, aspect ratio problems, off-center subjects
-5. **Technical Errors**: interlacing artifacts, frame blending issues
+4. **Framing Issues**: unintended letterboxing, aspect ratio problems
+5. **Technical Errors**: frame blending, duplicate frames, sync issues
+6. **Transition Issues**: jarring cuts, mismatched shots, unintended jump cuts
 
 For each issue found, provide:
-- Category (e.g., "Color", "Exposure", "Artifacts")
+- Category (e.g., "Color", "Exposure", "Artifacts", "Transition")
 - Severity: "error" (must fix), "warning" (should review), "info" (minor)
 - Title: Brief issue name
 - Description: What's wrong and how to fix it
@@ -300,7 +467,6 @@ If the video looks professional and has no issues, return empty issues array wit
         
         # Parse JSON from response
         try:
-            # Try to extract JSON from the response
             json_match = response_text
             if '```json' in response_text:
                 json_match = response_text.split('```json')[1].split('```')[0]
@@ -378,6 +544,23 @@ def submit_results(upload_id: str, visual_analysis: dict, audio_analysis: dict, 
         return False
 
 
+def get_analysis_mode_from_metadata(bucket_name: str, blob_name: str) -> str:
+    """Check for analysis mode in object metadata."""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.reload()  # Fetch metadata
+        
+        metadata = blob.metadata or {}
+        mode = metadata.get('analysis_mode', 'thorough')
+        print(f"Analysis mode from metadata: {mode}")
+        return mode
+    except Exception as e:
+        print(f"Could not read metadata: {e}")
+        return 'thorough'  # Default to thorough
+
+
 @app.route('/', methods=['POST'])
 def handle_gcs_event():
     """Handle GCS Eventarc trigger for new video uploads."""
@@ -404,7 +587,7 @@ def handle_gcs_event():
     if not blob_name:
         return jsonify({'error': 'No file name in event'}), 400
     
-    # Skip folder objects (folders trigger events too but can't be downloaded)
+    # Skip folder objects
     if blob_name.endswith('/'):
         print(f"Skipping folder object: {blob_name}")
         return jsonify({'skipped': True, 'reason': 'folder object'}), 200
@@ -416,12 +599,9 @@ def handle_gcs_event():
         return jsonify({'skipped': True, 'reason': 'not a video file'}), 200
     
     # Extract upload ID from path
-    # Expected format: uploads/{uuid}/{filename}
-    # The {uuid} MUST be a valid UUID that exists in video_uploads table
     path_parts = blob_name.split('/')
     upload_id = None
     
-    # Look for a UUID pattern in path parts (Supabase uses gen_random_uuid())
     uuid_pattern = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', re.IGNORECASE)
     
     for part in path_parts:
@@ -431,11 +611,12 @@ def handle_gcs_event():
     
     if not upload_id:
         print(f"Skipping file without valid UUID in path: {blob_name}")
-        print(f"  Expected format: uploads/{{uuid}}/{{filename}}")
-        print(f"  Path parts: {path_parts}")
         return jsonify({'skipped': True, 'reason': 'no valid UUID in path'}), 200
     
-    print(f"Processing video: {blob_name} (upload_id: {upload_id})")
+    # Get analysis mode from object metadata
+    mode = get_analysis_mode_from_metadata(bucket_name, blob_name)
+    
+    print(f"Processing video: {blob_name} (upload_id: {upload_id}, mode: {mode})")
     
     # Create temp directory for processing
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -443,14 +624,27 @@ def handle_gcs_event():
             # Download video
             video_path = download_video(bucket_name, blob_name, temp_dir)
             
-            # Run all analyses
-            frames = extract_frames(video_path, temp_dir, num_frames=10)
-            audio_analysis = analyze_audio(video_path)
-            black_frame_issues = detect_black_frames(video_path)
-            visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name))
-            
-            # Merge black frame issues into visual analysis
-            visual_analysis['issues'] = visual_analysis.get('issues', []) + black_frame_issues
+            # Run analyses based on mode
+            if mode == 'quick':
+                # Quick mode: minimal analysis
+                frames = extract_frames_smart(video_path, temp_dir, mode='quick')
+                audio_analysis = analyze_audio(video_path)
+                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick')
+                
+            else:
+                # Thorough mode: comprehensive analysis
+                frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
+                
+                # Run all detection in parallel-ish (Python limitations, but still faster)
+                audio_analysis = analyze_audio(video_path)
+                black_frame_issues = detect_black_frames(video_path)
+                flash_frame_issues = detect_flash_frames(video_path)
+                freeze_frame_issues = detect_freeze_frames(video_path)
+                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough')
+                
+                # Merge all FFmpeg-detected issues into visual analysis
+                all_ffmpeg_issues = black_frame_issues + flash_frame_issues + freeze_frame_issues
+                visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
             
             # Submit results
             submit_results(upload_id, visual_analysis, audio_analysis, success=True)
@@ -458,6 +652,7 @@ def handle_gcs_event():
             return jsonify({
                 'success': True,
                 'uploadId': upload_id,
+                'mode': mode,
                 'framesAnalyzed': len(frames),
                 'audioIssues': len(audio_analysis.get('issues', [])),
                 'visualIssues': len(visual_analysis.get('issues', []))
@@ -481,5 +676,4 @@ def health_check():
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))

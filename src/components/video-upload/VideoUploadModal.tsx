@@ -17,11 +17,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Unlink } from 'lucide-react';
+import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
 import { QCFlagsList } from './QCFlagsList';
-import { useVideoUpload } from '@/hooks/useVideoUpload';
+import { useVideoUpload, AnalysisMode } from '@/hooks/useVideoUpload';
 import { useFrameIO } from '@/hooks/useFrameIO';
 import { useLocation } from 'react-router-dom';
 
@@ -49,6 +50,7 @@ export function VideoUploadModal({
   const [selectedFrameioProject, setSelectedFrameioProject] = useState<string>('');
   const [manualFeedback, setManualFeedback] = useState<string>('');
   const [useManualEntry, setUseManualEntry] = useState(false);
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('thorough');
   const location = useLocation();
 
   const {
@@ -80,6 +82,7 @@ export function VideoUploadModal({
       setSelectedFrameioProject('');
       setManualFeedback('');
       setUseManualEntry(false);
+      setAnalysisMode('thorough');
       reset();
     }
   }, [open, reset, isConnected]);
@@ -113,7 +116,7 @@ export function VideoUploadModal({
       .map(l => l.trim())
       .filter(l => l.length > 0);
 
-    await uploadVideo(file, projectId, clientName, feedbackItems.length > 0 ? feedbackItems : undefined);
+    await uploadVideo(file, projectId, clientName, feedbackItems.length > 0 ? feedbackItems : undefined, analysisMode);
   };
 
   // Extract Frame.io project ID from URL or raw ID
@@ -230,6 +233,35 @@ export function VideoUploadModal({
 
         {step === 'upload' && (
           <div className="space-y-4">
+            {/* Analysis Mode Toggle */}
+            <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+              <div className="flex items-center gap-3">
+                {analysisMode === 'quick' ? (
+                  <Zap className="h-5 w-5 text-amber-500" />
+                ) : (
+                  <Search className="h-5 w-5 text-primary" />
+                )}
+                <div>
+                  <p className="font-medium">
+                    {analysisMode === 'quick' ? 'Quick Review' : 'Thorough Analysis'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {analysisMode === 'quick' 
+                      ? 'Fast check (5 frames, basic audio)' 
+                      : 'Full scan (15+ frames, flash/freeze detection, scene analysis)'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Quick</span>
+                <Switch
+                  checked={analysisMode === 'thorough'}
+                  onCheckedChange={(checked) => setAnalysisMode(checked ? 'thorough' : 'quick')}
+                />
+                <span className="text-xs text-muted-foreground">Thorough</span>
+              </div>
+            </div>
+
             <Tabs defaultValue="upload">
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="upload">Upload Video</TabsTrigger>
@@ -251,7 +283,9 @@ export function VideoUploadModal({
                     <div>
                       <p className="font-medium">AI is analyzing your video...</p>
                       <p className="text-sm text-muted-foreground">
-                        Checking against QC standards and reviewing feedback
+                        {analysisMode === 'quick' 
+                          ? 'Running quick review...' 
+                          : 'Checking against QC standards and reviewing feedback'}
                       </p>
                     </div>
                     <Loader2 className="h-5 w-5 animate-spin ml-auto" />
