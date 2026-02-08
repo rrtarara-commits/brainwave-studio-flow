@@ -1,0 +1,67 @@
+# Cloud Build configuration for TCV Video QC Analyzer
+# Automatically builds and deploys to Cloud Run on push
+
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:latest'
+      - '.'
+
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:$COMMIT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:latest'
+
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'tcv-video-analyzer'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '900'
+      - '--concurrency'
+      - '1'
+      - '--max-instances'
+      - '10'
+      - '--set-env-vars'
+      - 'GCS_BUCKET=${_GCS_BUCKET},SUPABASE_URL=${_SUPABASE_URL}'
+      - '--set-secrets'
+      - 'GCP_CALLBACK_SECRET=GCP_CALLBACK_SECRET:latest'
+      - '--allow-unauthenticated'
+
+# Store images in Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/tcv-video-analyzer:latest'
+
+# Build configuration
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Substitution variables (set these in Cloud Build trigger)
+substitutions:
+  _GCS_BUCKET: 'tcv-video-uploads'
+  _SUPABASE_URL: 'https://hdytpmbgrhaxyjvvpewy.supabase.co'
