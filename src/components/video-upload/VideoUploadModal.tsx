@@ -55,6 +55,7 @@ export function VideoUploadModal({
     upload,
     isUploading,
     isAnalyzing,
+    isDeepAnalyzing,
     uploadVideo,
     dismissFlag,
     submitToFrameio,
@@ -305,6 +306,44 @@ export function VideoUploadModal({
                 </p>
               </div>
             </div>
+
+            {/* Deep Analysis Status */}
+            {isDeepAnalyzing && (
+              <div className="flex items-center gap-3 p-4 bg-primary/5 border border-primary/20 rounded-lg animate-pulse">
+                <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                <div className="flex-1">
+                  <p className="font-medium text-primary">Deep Analysis in Progress</p>
+                  <p className="text-xs text-muted-foreground">
+                    Analyzing video frames and audio levels with AI...
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {upload.deepAnalysisStatus === 'complete' && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-primary/10 border border-primary/20">
+                <CheckCircle2 className="h-5 w-5 text-primary" />
+                <div className="flex-1">
+                  <p className="font-medium">Deep Analysis Complete</p>
+                  <p className="text-xs text-muted-foreground">
+                    {upload.visualAnalysis?.framesAnalyzed || 0} frames analyzed • 
+                    {upload.audioAnalysis ? ' Audio levels checked' : ''}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {upload.deepAnalysisStatus === 'failed' && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+                <div className="flex-1">
+                  <p className="font-medium text-destructive">Deep Analysis Unavailable</p>
+                  <p className="text-xs text-muted-foreground">
+                    Video analysis could not be completed. You can still proceed with the upload.
+                  </p>
+                </div>
+              </div>
+            )}
 
             <QCFlagsList
               flags={upload.qcResult.flags}

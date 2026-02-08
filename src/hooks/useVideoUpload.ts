@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
@@ -11,6 +11,7 @@ export interface QCFlag {
   description: string;
   source: string;
   ruleId?: string;
+  timestamp?: number | null;
 }
 
 export interface QCResult {
@@ -27,6 +28,22 @@ export interface QCResult {
   };
 }
 
+export interface DeepAnalysisResult {
+  visual?: {
+    issues: QCFlag[];
+    summary: string;
+    qualityScore?: number;
+    framesAnalyzed?: number;
+  };
+  audio?: {
+    issues: QCFlag[];
+    summary: string;
+    averageDialogueDb?: number;
+    peakDb?: number;
+    silenceGaps?: number;
+  };
+}
+
 export interface VideoUpload {
   id: string;
   projectId: string;
@@ -37,6 +54,9 @@ export interface VideoUpload {
   qcPassed?: boolean;
   dismissedFlags: string[];
   frameioLink?: string;
+  deepAnalysisStatus?: 'pending' | 'processing' | 'complete' | 'failed';
+  visualAnalysis?: DeepAnalysisResult['visual'];
+  audioAnalysis?: DeepAnalysisResult['audio'];
 }
 
 export function useVideoUpload() {
@@ -45,6 +65,131 @@ export function useVideoUpload() {
   const [upload, setUpload] = useState<VideoUpload | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Poll for deep analysis results
+  const pollDeepAnalysis = useCallback((uploadId: string) => {
+    // Clear any existing polling
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+
+    setIsDeepAnalyzing(true);
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('video_uploads')
+          .select('deep_analysis_status, visual_analysis, audio_analysis, qc_passed')
+          .eq('id', uploadId)
+          .single();
+
+        if (error) {
+          console.error('Poll error:', error);
+          return;
+        }
+
+        if (data?.deep_analysis_status === 'complete') {
+          // Deep analysis is done - update state with results
+          setUpload(prev => {
+            if (!prev) return prev;
+            
+            // Merge deep analysis flags into qcResult
+            const deepFlags: QCFlag[] = [];
+            
+            // Type assertion for JSON data from database
+            const visualAnalysis = data.visual_analysis as { issues?: unknown[]; summary?: string; qualityScore?: number; framesAnalyzed?: number } | null;
+            const audioAnalysis = data.audio_analysis as { issues?: unknown[]; summary?: string; averageDialogueDb?: number; peakDb?: number; silenceGaps?: number } | null;
+            
+            if (visualAnalysis?.issues && Array.isArray(visualAnalysis.issues)) {
+              deepFlags.push(...visualAnalysis.issues.map((f: unknown) => {
+                const flag = f as QCFlag;
+                return {
+                  ...flag,
+                  source: 'ai_analysis' as const,
+                };
+              }));
+            }
+            
+            if (audioAnalysis?.issues && Array.isArray(audioAnalysis.issues)) {
+              deepFlags.push(...audioAnalysis.issues.map((f: unknown) => {
+                const flag = f as QCFlag;
+                return {
+                  ...flag,
+                  source: 'ai_analysis' as const,
+                };
+              }));
+            }
+
+            const updatedResult = prev.qcResult ? {
+              ...prev.qcResult,
+              flags: [...prev.qcResult.flags, ...deepFlags],
+              passed: data.qc_passed ?? prev.qcResult.passed,
+              thoughtTrace: {
+                ...prev.qcResult.thoughtTrace,
+                visualFramesAnalyzed: visualAnalysis?.framesAnalyzed || 0,
+                audioAnalyzed: !!audioAnalysis,
+              },
+            } : prev.qcResult;
+
+            return {
+              ...prev,
+              deepAnalysisStatus: 'complete' as const,
+              visualAnalysis: visualAnalysis as VideoUpload['visualAnalysis'],
+              audioAnalysis: audioAnalysis as VideoUpload['audioAnalysis'],
+              qcResult: updatedResult,
+              qcPassed: data.qc_passed ?? prev.qcPassed,
+            };
+          });
+
+          // Stop polling
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+          setIsDeepAnalyzing(false);
+
+          toast({
+            title: 'Deep Analysis Complete',
+            description: 'Video visual and audio analysis results are ready for review.',
+          });
+
+        } else if (data?.deep_analysis_status === 'failed') {
+          // Analysis failed
+          setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'failed' } : null);
+          
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+          setIsDeepAnalyzing(false);
+
+          toast({
+            variant: 'destructive',
+            title: 'Deep Analysis Failed',
+            description: 'Video analysis could not be completed. You can still proceed with the upload.',
+          });
+
+        } else if (data?.deep_analysis_status === 'processing') {
+          setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'processing' } : null);
+        }
+
+      } catch (err) {
+        console.error('Polling error:', err);
+      }
+    }, 3000); // Poll every 3 seconds
+
+  }, [toast]);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, []);
 
   // Upload file to storage and create record
   const uploadVideo = useCallback(async (
@@ -149,7 +294,11 @@ export function useVideoUpload() {
           status: 'reviewed',
           qcResult: data.result,
           qcPassed: data.result.passed,
+          deepAnalysisStatus: 'pending',
         } : null);
+        
+        // Start polling for deep analysis results
+        pollDeepAnalysis(uploadData.id);
       } else {
         throw new Error(data?.error || 'QC analysis failed');
       }
@@ -164,7 +313,7 @@ export function useVideoUpload() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [toast]);
+  }, [toast, pollDeepAnalysis]);
 
   // Dismiss a flag
   const dismissFlag = useCallback((flagId: string) => {
@@ -233,15 +382,22 @@ export function useVideoUpload() {
 
   // Reset state
   const reset = useCallback(() => {
+    // Clear polling
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
     setUpload(null);
     setIsUploading(false);
     setIsAnalyzing(false);
+    setIsDeepAnalyzing(false);
   }, []);
 
   return {
     upload,
     isUploading,
     isAnalyzing,
+    isDeepAnalyzing,
     uploadVideo,
     dismissFlag,
     submitToFrameio,
