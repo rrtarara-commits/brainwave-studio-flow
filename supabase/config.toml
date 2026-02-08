@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.gcp-analysis-callback]
 verify_jwt = false
+
+[functions.sync-dismissed-flags]
+verify_jwt = false

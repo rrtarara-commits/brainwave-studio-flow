@@ -406,7 +406,114 @@ def detect_black_frames(video_path: str) -> list[dict]:
     return issues
 
 
-def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'thorough') -> dict:
+def load_known_exceptions() -> list[dict]:
+    """Load known exceptions from GCS feedback.json (the Memory Layer)."""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob = bucket.blob('config/feedback.json')
+        
+        if not blob.exists():
+            print("No feedback.json found, no known exceptions to load")
+            return []
+        
+        content = blob.download_as_text()
+        feedback = json.loads(content)
+        
+        exceptions = feedback.get('known_exceptions', [])
+        print(f"Loaded {len(exceptions)} known exception patterns from Memory Layer")
+        return exceptions
+        
+    except Exception as e:
+        print(f"Could not load known exceptions: {e}")
+        return []
+
+
+def build_prompt_for_mode(mode: str, known_exceptions: list[dict]) -> str:
+    """Build role-based prompt based on analysis mode."""
+    
+    # Build known exceptions context if any
+    exceptions_context = ""
+    if known_exceptions:
+        exception_lines = []
+        for exc in known_exceptions[:20]:  # Limit to top 20
+            exception_lines.append(f"- {exc.get('category', 'Unknown')}: {exc.get('pattern', '')} (dismissed {exc.get('count', 0)} times)")
+        exceptions_context = f"""
+
+KNOWN EXCEPTIONS (issues previously dismissed by editors as acceptable):
+{chr(10).join(exception_lines)}
+
+Do NOT flag issues that match these known exceptions unless they are severe errors."""
+
+    if mode == 'quick':
+        # Quick mode: QC Editor persona - fast pass/fail
+        return f"""You are a QC Editor performing a quick technical review. Your job is to catch obvious errors quickly, not to nitpick.
+
+Scan these video frames for:
+1. **Obvious visual errors**: glaring artifacts, black frames, severe color issues
+2. **Brand logo accuracy**: if logos are visible, are they correct?
+3. **Major technical problems**: severe compression, visible interlacing
+
+Be efficient. Only flag issues that would definitely require a revision.
+Ignore minor imperfections that are acceptable in professional video.
+{exceptions_context}
+
+Respond in JSON format:
+{{
+  "issues": [
+    {{
+      "category": "string",
+      "type": "error|warning|info",
+      "title": "string",
+      "description": "string"
+    }}
+  ],
+  "summary": "PASS/FAIL with brief reason",
+  "qualityScore": 1-10
+}}
+
+If the video passes basic QC, return empty issues array with "PASS: [reason]" summary."""
+    
+    else:
+        # Thorough mode: Senior Creative Director persona - detailed analysis
+        return f"""You are a Senior Creative Director reviewing this video with a critical eye for both technical quality and creative execution.
+
+Analyze these frames in detail for:
+
+**Technical Quality:**
+1. Visual artifacts, compression issues, banding, blocking, interlacing
+2. Color consistency: white balance, grading continuity between shots, color banding
+3. Exposure: blown highlights, crushed blacks, underexposure
+4. Frame integrity: aspect ratio issues, unintended letterboxing
+
+**Creative Execution:**
+5. Pacing: any visible jump cuts or jarring transitions
+6. Brand consistency: logo placement, color accuracy (check against brand HEX if visible)
+7. Lower-third typography: font consistency, safe area compliance
+8. Continuity: any visible mismatches between shots
+{exceptions_context}
+
+For each issue found, provide timestamped feedback when possible.
+Be thorough but fair - distinguish between must-fix errors and should-review suggestions.
+
+Respond in JSON format:
+{{
+  "issues": [
+    {{
+      "category": "string",
+      "type": "error|warning|info",
+      "title": "string",
+      "description": "detailed explanation with fix suggestion"
+    }}
+  ],
+  "summary": "Detailed quality assessment (2-3 sentences)",
+  "qualityScore": 1-10
+}}
+
+If the video meets professional standards, return empty issues array with positive summary."""
+
+
+def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'thorough', known_exceptions: list[dict] = None) -> dict:
     """Analyze frames using Vertex AI Gemini for creative/quality issues."""
     if not frame_paths:
         return {
@@ -430,37 +537,8 @@ def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'tho
                 frame_data = f.read()
                 frame_parts.append(Part.from_data(frame_data, mime_type="image/jpeg"))
         
-        prompt = """You are a professional video QC specialist. Analyze these frames from a video file and identify any quality issues.
-
-Check for:
-1. **Visual Glitches**: artifacts, compression issues, banding, blocking, interlacing
-2. **Color Issues**: incorrect white balance, oversaturation, color banding, inconsistent grading between shots
-3. **Exposure Problems**: blown highlights, crushed blacks, underexposure
-4. **Framing Issues**: unintended letterboxing, aspect ratio problems
-5. **Technical Errors**: frame blending, duplicate frames, sync issues
-6. **Transition Issues**: jarring cuts, mismatched shots, unintended jump cuts
-
-For each issue found, provide:
-- Category (e.g., "Color", "Exposure", "Artifacts", "Transition")
-- Severity: "error" (must fix), "warning" (should review), "info" (minor)
-- Title: Brief issue name
-- Description: What's wrong and how to fix it
-
-Respond in JSON format:
-{
-  "issues": [
-    {
-      "category": "string",
-      "type": "error|warning|info",
-      "title": "string",
-      "description": "string"
-    }
-  ],
-  "summary": "Overall quality assessment in one sentence",
-  "qualityScore": 1-10
-}
-
-If the video looks professional and has no issues, return empty issues array with positive summary."""
+        # Build role-based prompt with known exceptions
+        prompt = build_prompt_for_mode(mode, known_exceptions or [])
 
         response = model.generate_content([prompt] + frame_parts)
         response_text = response.text
@@ -624,15 +702,18 @@ def handle_gcs_event():
             # Download video
             video_path = download_video(bucket_name, blob_name, temp_dir)
             
+        # Load known exceptions from Memory Layer
+            known_exceptions = load_known_exceptions()
+            
             # Run analyses based on mode
             if mode == 'quick':
-                # Quick mode: minimal analysis
+                # Quick mode: minimal analysis with QC Editor persona
                 frames = extract_frames_smart(video_path, temp_dir, mode='quick')
                 audio_analysis = analyze_audio(video_path)
-                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick')
+                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick', known_exceptions=known_exceptions)
                 
             else:
-                # Thorough mode: comprehensive analysis
+                # Thorough mode: comprehensive analysis with Creative Director persona
                 frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
                 
                 # Run all detection in parallel-ish (Python limitations, but still faster)
@@ -640,7 +721,7 @@ def handle_gcs_event():
                 black_frame_issues = detect_black_frames(video_path)
                 flash_frame_issues = detect_flash_frames(video_path)
                 freeze_frame_issues = detect_freeze_frames(video_path)
-                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough')
+                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough', known_exceptions=known_exceptions)
                 
                 # Merge all FFmpeg-detected issues into visual analysis
                 all_ffmpeg_issues = black_frame_issues + flash_frame_issues + freeze_frame_issues

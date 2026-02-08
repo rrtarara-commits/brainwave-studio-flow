@@ -88,27 +88,52 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 # Create bucket (replace with your unique name)
 gsutil mb -l us-central1 gs://tcv-video-uploads-$PROJECT_ID
 
-# Set lifecycle rule to auto-delete after 7 days (saves costs)
+# Note: We recommend using 'tcvstudioanalyze' as the bucket name for the analyzer
+```
+
+### 3.2 Set Lifecycle Rule (Auto-cleanup after 24 hours)
+
+To minimize storage costs, configure a lifecycle rule to automatically delete analyzed videos after 24 hours while preserving config files:
+
+```bash
 cat > /tmp/lifecycle.json << 'EOF'
 {
   "rule": [
     {
       "action": {"type": "Delete"},
-      "condition": {"age": 7}
+      "condition": {
+        "age": 1,
+        "matchesPrefix": ["uploads/"]
+      }
     }
   ]
 }
 EOF
 
-gsutil lifecycle set /tmp/lifecycle.json gs://tcv-video-uploads-$PROJECT_ID
+gsutil lifecycle set /tmp/lifecycle.json gs://tcvstudioanalyze
 ```
 
-### 3.2 Grant Service Account Access
+**Via Google Cloud Console (alternative):**
+1. Go to **Cloud Storage** → **Buckets** → `tcvstudioanalyze`
+2. Click **Lifecycle** tab
+3. Click **Add a rule**
+4. Configure:
+   - **Action**: Delete object
+   - **Condition**: Age = 1 day
+   - **Object name prefix**: `uploads/` (only delete analyzed videos, not config files)
+5. Click **Create**
+
+### 3.3 Grant Service Account Access
 
 ```bash
 gsutil iam ch \
   serviceAccount:tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com:objectViewer \
   gs://tcv-video-uploads-$PROJECT_ID
+
+# Also grant write access for the config/feedback.json (Memory Layer)
+gsutil iam ch \
+  serviceAccount:tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com:objectCreator \
+  gs://tcvstudioanalyze
 ```
 
 ---
@@ -298,11 +323,12 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 
 ## Cost Optimization Tips
 
-1. **Lifecycle Policy**: Auto-delete files after 7 days
+1. **Lifecycle Policy**: Auto-delete uploaded videos after 24 hours (config files in `/config` are preserved)
 2. **Cloud Run Concurrency**: Set to 1 to process one video at a time
 3. **Max Instances**: Limit to 10 to control costs
 4. **Region**: Use `us-central1` for cheapest Vertex AI pricing
-5. **Frame Extraction**: Limit to 5-10 frames per video
+5. **Frame Extraction**: Quick mode uses 5 frames, Thorough uses up to 15
+6. **Memory Layer**: Dismissed flags are synced to GCS to reduce repeat false positives
 
 ---
 
@@ -353,3 +379,45 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 2. Add the GCS signed URL edge function
 3. Test with a real video file
 4. Monitor costs in GCP Console
+
+---
+
+## Memory Layer (Learning from Dismissed Flags)
+
+The system includes a "Memory Layer" that learns from dismissed QC flags to reduce repeat false positives.
+
+### How It Works
+
+1. When editors dismiss QC flags in the UI, those dismissals are stored in `video_uploads.dismissed_flags`
+2. The `sync-dismissed-flags` edge function aggregates these patterns and uploads to `gs://tcvstudioanalyze/config/feedback.json`
+3. The Cloud Run worker reads this file and includes "Known Exceptions" in Gemini prompts
+4. AI analysis then avoids flagging issues that have been repeatedly dismissed
+
+### Syncing Dismissed Flags
+
+**Manual sync (admin only):**
+```bash
+curl -X POST https://hdytpmbgrhaxyjvvpewy.supabase.co/functions/v1/sync-dismissed-flags \
+  -H "Authorization: Bearer YOUR_ADMIN_JWT_TOKEN"
+```
+
+**Scheduled sync (recommended):**
+Set up a cron job to call the function daily:
+```bash
+# Example: Using Google Cloud Scheduler
+gcloud scheduler jobs create http sync-dismissed-flags \
+  --schedule="0 2 * * *" \
+  --uri="https://hdytpmbgrhaxyjvvpewy.supabase.co/functions/v1/sync-dismissed-flags" \
+  --http-method=POST \
+  --headers="x-cron-secret=YOUR_CRON_SECRET" \
+  --location=us-central1
+```
+
+### Role-Based AI Analysis
+
+The system uses different AI personas based on analysis mode:
+
+| Mode | Persona | Focus |
+|------|---------|-------|
+| Quick | QC Editor | Fast pass/fail, catches obvious errors only |
+| Thorough | Senior Creative Director | Detailed analysis of technical + creative quality |
