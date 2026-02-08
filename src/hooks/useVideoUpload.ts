@@ -387,6 +387,7 @@ export function useVideoUpload() {
       if (data?.success) {
         const frameioLink = data.data.shareLink;
         const commentsQueued = data.data.commentsQueued || 0;
+        const versionStacked = data.data.versionStacked || false;
         
         setUpload(prev => prev ? {
           ...prev,
@@ -394,11 +395,18 @@ export function useVideoUpload() {
           frameioLink,
         } : null);
 
+        let description = 'Video uploaded to Frame.io successfully';
+        if (versionStacked && commentsQueued > 0) {
+          description = `New version stacked with ${commentsQueued} QC notes attached`;
+        } else if (versionStacked) {
+          description = 'New version added to version stack';
+        } else if (commentsQueued > 0) {
+          description = `Video uploaded with ${commentsQueued} QC notes attached`;
+        }
+
         toast({
           title: 'Success!',
-          description: commentsQueued > 0 
-            ? `Video uploaded with ${commentsQueued} QC notes attached`
-            : 'Video uploaded to Frame.io successfully',
+          description,
         });
 
         return frameioLink;

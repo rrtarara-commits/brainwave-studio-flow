@@ -465,7 +465,18 @@ export default function Projects() {
                         </SelectContent>
                       </Select>
                     )}
-                    {(project as any).frameio_link ? (
+                    {/* Always show upload button */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs px-2"
+                      onClick={(e) => openUploadModal(project, e)}
+                      title={(project as any).frameio_link ? 'Upload new version' : 'Upload video'}
+                    >
+                      <Upload className="h-3 w-3" />
+                    </Button>
+                    {/* Show review link if exists */}
+                    {(project as any).frameio_link && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -474,17 +485,9 @@ export default function Projects() {
                           e.stopPropagation();
                           window.open((project as any).frameio_link, '_blank');
                         }}
+                        title="Open Frame.io review"
                       >
                         <Video className="h-3 w-3" />
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-xs px-2"
-                        onClick={(e) => openUploadModal(project, e)}
-                      >
-                        <Upload className="h-3 w-3" />
                       </Button>
                     )}
                   </div>
@@ -562,7 +565,18 @@ export default function Projects() {
                             </SelectContent>
                           </Select>
                         )}
-                        {(project as any).frameio_link ? (
+                        {/* Always show upload button */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={(e) => openUploadModal(project, e)}
+                          title={(project as any).frameio_link ? 'Upload new version' : 'Upload video'}
+                        >
+                          <Upload className="h-3 w-3" />
+                        </Button>
+                        {/* Show review link if exists */}
+                        {(project as any).frameio_link && (
                           <Button
                             variant="ghost"
                             size="sm"
@@ -571,17 +585,9 @@ export default function Projects() {
                               e.stopPropagation();
                               window.open((project as any).frameio_link, '_blank');
                             }}
+                            title="Open Frame.io review"
                           >
                             <Video className="h-3 w-3" />
-                          </Button>
-                        ) : (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0"
-                            onClick={(e) => openUploadModal(project, e)}
-                          >
-                            <Upload className="h-3 w-3" />
                           </Button>
                         )}
                         <ChevronRight className="h-4 w-4 text-muted-foreground" />
