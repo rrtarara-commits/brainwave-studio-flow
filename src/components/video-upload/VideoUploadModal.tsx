@@ -281,6 +281,18 @@ export function VideoUploadModal({
 
         {step === 'review' && upload?.qcResult && (
           <div className="space-y-4">
+            {/* Upload ID for GCS Testing */}
+            <div className="p-3 rounded-lg bg-muted/50 border border-border">
+              <p className="text-xs text-muted-foreground mb-1">Upload ID (for GCS testing)</p>
+              <code className="text-xs font-mono text-foreground break-all select-all">
+                {upload.id}
+              </code>
+              <p className="text-xs text-muted-foreground mt-2">Expected GCS path:</p>
+              <code className="text-xs font-mono text-primary break-all select-all">
+                uploads/{upload.id}/{upload.fileName}
+              </code>
+            </div>
+
             <div className="flex items-center gap-2 p-3 rounded-lg bg-muted">
               <Brain className="h-5 w-5 text-primary" />
               <div className="flex-1">
