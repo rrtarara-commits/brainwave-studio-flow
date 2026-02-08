@@ -3,6 +3,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 
+export type AnalysisMode = 'quick' | 'thorough';
+
 export interface QCFlag {
   id: string;
   type: 'error' | 'warning' | 'info';
@@ -57,6 +59,7 @@ export interface VideoUpload {
   deepAnalysisStatus?: 'pending' | 'processing' | 'complete' | 'failed';
   visualAnalysis?: DeepAnalysisResult['visual'];
   audioAnalysis?: DeepAnalysisResult['audio'];
+  analysisMode?: AnalysisMode;
 }
 
 export function useVideoUpload() {
@@ -196,7 +199,8 @@ export function useVideoUpload() {
     file: File,
     projectId: string,
     clientName?: string,
-    frameioFeedback?: string[]
+    frameioFeedback?: string[],
+    analysisMode: AnalysisMode = 'thorough'
   ) => {
     if (!user) {
       toast({ variant: 'destructive', title: 'Error', description: 'You must be logged in' });
@@ -243,13 +247,14 @@ export function useVideoUpload() {
         fileSize: file.size,
         status: 'pending',
         dismissedFlags: [],
+        analysisMode,
       };
 
       setUpload(newUpload);
       setIsUploading(false);
 
       // Start QC analysis
-      await analyzeVideo(newUpload, storagePath, clientName, frameioFeedback);
+      await analyzeVideo(newUpload, storagePath, clientName, frameioFeedback, analysisMode);
 
       return newUpload;
     } catch (error) {
@@ -269,7 +274,8 @@ export function useVideoUpload() {
     uploadData: VideoUpload,
     storagePath: string,
     clientName?: string,
-    frameioFeedback?: string[]
+    frameioFeedback?: string[],
+    analysisMode: AnalysisMode = 'thorough'
   ) => {
     setIsAnalyzing(true);
     setUpload(prev => prev ? { ...prev, status: 'analyzing' } : null);
@@ -283,6 +289,7 @@ export function useVideoUpload() {
           storagePath,
           clientName,
           frameioFeedback,
+          analysisMode,
         },
       });
 
