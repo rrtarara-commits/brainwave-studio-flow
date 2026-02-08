@@ -345,7 +345,7 @@ Deno.serve(async (req) => {
       },
     };
 
-    // Update the upload record and queue for deep analysis
+    // Update the upload record
     await serviceClient
       .from('video_uploads')
       .update({
@@ -353,11 +353,12 @@ Deno.serve(async (req) => {
         qc_result: result,
         qc_passed: passed,
         analyzed_at: new Date().toISOString(),
-        deep_analysis_status: 'pending', // Queue for TrueNAS deep analysis
+        deep_analysis_status: 'pending', // Will be processed by GCP Cloud Run
       })
       .eq('id', uploadId);
 
     console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags`);
+    console.log('Deep analysis will be triggered by GCS upload event');
 
     return new Response(
       JSON.stringify({ success: true, result }),

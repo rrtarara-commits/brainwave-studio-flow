@@ -21,8 +21,5 @@ verify_jwt = false
 [functions.frameio]
 verify_jwt = false
 
-[functions.deep-analysis-poll]
-verify_jwt = false
-
-[functions.deep-analysis-callback]
+[functions.gcp-analysis-callback]
 verify_jwt = false
