@@ -340,13 +340,36 @@ export function useVideoUpload() {
     });
   }, []);
 
-  // Submit to Frame.io
-  const submitToFrameio = useCallback(async (frameioProjectId: string) => {
+  // Submit to Frame.io with optional QC comments
+  const submitToFrameio = useCallback(async (
+    frameioProjectId: string,
+    includeComments: boolean = false
+  ) => {
     if (!upload) return null;
 
     setUpload(prev => prev ? { ...prev, status: 'uploading' } : null);
 
     try {
+      // Prepare QC comments if requested
+      let qcComments: Array<{
+        text: string;
+        timestamp?: number | null;
+        type?: 'error' | 'warning' | 'info';
+        category?: string;
+      }> | undefined;
+
+      if (includeComments && upload.qcResult?.flags) {
+        // Filter out dismissed flags and map to comment format
+        qcComments = upload.qcResult.flags
+          .filter(f => !upload.dismissedFlags.includes(f.id))
+          .map(f => ({
+            text: `${f.title}: ${f.description}`,
+            timestamp: f.timestamp ?? null,
+            type: f.type,
+            category: f.category,
+          }));
+      }
+
       const { data, error } = await supabase.functions.invoke('frameio', {
         body: {
           action: 'upload',
@@ -355,6 +378,7 @@ export function useVideoUpload() {
           uploadId: upload.id,
           fileName: upload.fileName,
           fileSize: upload.fileSize,
+          qcComments,
         },
       });
 
@@ -362,6 +386,8 @@ export function useVideoUpload() {
 
       if (data?.success) {
         const frameioLink = data.data.shareLink;
+        const commentsQueued = data.data.commentsQueued || 0;
+        
         setUpload(prev => prev ? {
           ...prev,
           status: 'completed',
@@ -370,7 +396,9 @@ export function useVideoUpload() {
 
         toast({
           title: 'Success!',
-          description: 'Video uploaded to Frame.io successfully',
+          description: commentsQueued > 0 
+            ? `Video uploaded with ${commentsQueued} QC notes attached`
+            : 'Video uploaded to Frame.io successfully',
         });
 
         return frameioLink;
