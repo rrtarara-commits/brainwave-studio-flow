@@ -90,7 +90,7 @@ export function useVideoUpload() {
           return;
         }
 
-        if (data?.deep_analysis_status === 'complete') {
+        if (data?.deep_analysis_status === 'completed' || data?.deep_analysis_status === 'complete') {
           // Deep analysis is done - update state with results
           setUpload(prev => {
             if (!prev) return prev;
