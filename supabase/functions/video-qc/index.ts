@@ -5,6 +5,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+// GCS configuration
+const GCS_BUCKET = 'tcvstudioanalyze';
+const GCS_API_URL = 'https://storage.googleapis.com/upload/storage/v1/b';
+
 interface QCRequest {
   uploadId: string;
   projectId: string;
@@ -37,6 +41,135 @@ interface QCResult {
     audioAnalyzed: boolean;
     note?: string;
   };
+}
+
+// Get OAuth2 access token from service account JSON
+async function getGCSAccessToken(): Promise<string | null> {
+  const serviceAccountJson = Deno.env.get('GCP_SERVICE_ACCOUNT_JSON');
+  if (!serviceAccountJson) {
+    console.error('GCP_SERVICE_ACCOUNT_JSON not configured');
+    return null;
+  }
+
+  try {
+    const sa = JSON.parse(serviceAccountJson);
+    
+    // Create JWT for token exchange
+    const header = { alg: 'RS256', typ: 'JWT' };
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: sa.client_email,
+      scope: 'https://www.googleapis.com/auth/devstorage.read_write',
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now,
+      exp: now + 3600,
+    };
+
+    // Base64url encode
+    const b64url = (obj: object) => btoa(JSON.stringify(obj))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    const unsignedToken = `${b64url(header)}.${b64url(payload)}`;
+
+    // Import private key and sign
+    const pemContents = sa.private_key
+      .replace('-----BEGIN PRIVATE KEY-----', '')
+      .replace('-----END PRIVATE KEY-----', '')
+      .replace(/\s/g, '');
+    
+    const binaryKey = Uint8Array.from(atob(pemContents), c => c.charCodeAt(0));
+    
+    const cryptoKey = await crypto.subtle.importKey(
+      'pkcs8',
+      binaryKey,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign(
+      'RSASSA-PKCS1-v1_5',
+      cryptoKey,
+      new TextEncoder().encode(unsignedToken)
+    );
+
+    const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    const jwt = `${unsignedToken}.${signatureB64}`;
+
+    // Exchange JWT for access token
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${jwt}`,
+    });
+
+    if (!tokenResponse.ok) {
+      console.error('Token exchange failed:', await tokenResponse.text());
+      return null;
+    }
+
+    const tokenData = await tokenResponse.json();
+    return tokenData.access_token;
+  } catch (error) {
+    console.error('Failed to get GCS access token:', error);
+    return null;
+  }
+}
+
+// Copy file from Supabase Storage to GCS
+async function copyToGCS(
+  serviceClient: any,
+  storagePath: string,
+  uploadId: string,
+  fileName: string
+): Promise<boolean> {
+  try {
+    console.log(`Copying ${storagePath} to GCS uploads/${uploadId}/${fileName}`);
+
+    // Download from Supabase Storage
+    const { data: fileData, error: downloadError } = await serviceClient.storage
+      .from('video-uploads')
+      .download(storagePath);
+
+    if (downloadError || !fileData) {
+      console.error('Failed to download from Supabase Storage:', downloadError);
+      return false;
+    }
+
+    // Get GCS access token
+    const accessToken = await getGCSAccessToken();
+    if (!accessToken) {
+      console.error('Could not obtain GCS access token');
+      return false;
+    }
+
+    // Upload to GCS
+    const gcsPath = `uploads/${uploadId}/${fileName}`;
+    const uploadUrl = `${GCS_API_URL}/${GCS_BUCKET}/o?uploadType=media&name=${encodeURIComponent(gcsPath)}`;
+
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'video/mp4',
+      },
+      body: fileData,
+    });
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      console.error('GCS upload failed:', uploadResponse.status, errorText);
+      return false;
+    }
+
+    console.log(`Successfully copied to GCS: ${gcsPath}`);
+    return true;
+  } catch (error) {
+    console.error('Error copying to GCS:', error);
+    return false;
+  }
 }
 
 // Fetch QC standards for studio and specific client
@@ -358,7 +491,27 @@ Deno.serve(async (req) => {
       .eq('id', uploadId);
 
     console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags`);
-    console.log('Deep analysis will be triggered by GCS upload event');
+
+    // Copy file to GCS to trigger deep analysis (runs in background)
+    EdgeRuntime.waitUntil(
+      (async () => {
+        console.log('Starting background GCS upload...');
+        const gcsCopySuccess = await copyToGCS(serviceClient, storagePath, uploadId, fileName);
+        if (gcsCopySuccess) {
+          console.log(`GCS upload complete for ${uploadId}, deep analysis will be triggered`);
+          await serviceClient
+            .from('video_uploads')
+            .update({ deep_analysis_status: 'processing' })
+            .eq('id', uploadId);
+        } else {
+          console.error(`GCS upload failed for ${uploadId}`);
+          await serviceClient
+            .from('video_uploads')
+            .update({ deep_analysis_status: 'failed' })
+            .eq('id', uploadId);
+        }
+      })()
+    );
 
     return new Response(
       JSON.stringify({ success: true, result }),
