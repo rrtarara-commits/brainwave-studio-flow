@@ -22,6 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
 import { QCFlagsList } from './QCFlagsList';
+import { FilenameStandardizer } from './FilenameStandardizer';
 import { useVideoUpload, AnalysisMode } from '@/hooks/useVideoUpload';
 import { useFrameIO } from '@/hooks/useFrameIO';
 import { useLocation } from 'react-router-dom';
@@ -32,6 +33,7 @@ interface VideoUploadModalProps {
   projectId: string;
   projectTitle: string;
   clientName?: string;
+  projectCode?: string | null;
   onComplete?: (frameioLink: string) => void;
 }
 
@@ -43,6 +45,7 @@ export function VideoUploadModal({
   projectId,
   projectTitle,
   clientName,
+  projectCode,
   onComplete,
 }: VideoUploadModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -61,6 +64,7 @@ export function VideoUploadModal({
     uploadVideo,
     dismissFlag,
     submitToFrameio,
+    updateFilename,
     reset,
   } = useVideoUpload();
 
@@ -316,16 +320,33 @@ export function VideoUploadModal({
 
         {step === 'review' && upload?.qcResult && (
           <div className="space-y-4">
-            {/* Upload ID for GCS Testing */}
+            {/* Filename & Standardization */}
             <div className="p-3 rounded-lg bg-muted/50 border border-border">
-              <p className="text-xs text-muted-foreground mb-1">Upload ID (for GCS testing)</p>
-              <code className="text-xs font-mono text-foreground break-all select-all">
-                {upload.id}
-              </code>
-              <p className="text-xs text-muted-foreground mt-2">Expected GCS path:</p>
-              <code className="text-xs font-mono text-primary break-all select-all">
-                uploads/{upload.id}/{upload.fileName}
-              </code>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-muted-foreground mb-0.5">File name</p>
+                  <p className="text-sm font-medium truncate">{upload.fileName}</p>
+                </div>
+                <FilenameStandardizer
+                  uploadId={upload.id}
+                  currentFilename={upload.fileName}
+                  projectCode={projectCode || null}
+                  storagePath={upload.storagePath || null}
+                  onRename={(newName) => {
+                    // Compute new storage path
+                    const pathParts = (upload.storagePath || '').split('/');
+                    pathParts.pop();
+                    const newStoragePath = [...pathParts, newName].join('/');
+                    updateFilename(newName, newStoragePath);
+                  }}
+                />
+              </div>
+              <div className="pt-2 border-t border-border mt-2">
+                <p className="text-xs text-muted-foreground mb-1">Upload ID</p>
+                <code className="text-xs font-mono text-foreground break-all select-all">
+                  {upload.id}
+                </code>
+              </div>
             </div>
 
             <div className="flex items-center gap-2 p-3 rounded-lg bg-muted">

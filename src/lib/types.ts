@@ -34,6 +34,7 @@ export interface Project {
   video_format: string | null;
   assigned_editor_id: string | null;
   assigned_producer_id: string | null;
+  project_code: string | null;
   created_at: string;
   updated_at: string;
 }

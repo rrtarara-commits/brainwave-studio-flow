@@ -275,6 +275,7 @@ export type Database = {
           id: string
           internal_revisions: number | null
           notion_id: string | null
+          project_code: string | null
           sentiment_score: number | null
           status: string
           title: string
@@ -294,6 +295,7 @@ export type Database = {
           id?: string
           internal_revisions?: number | null
           notion_id?: string | null
+          project_code?: string | null
           sentiment_score?: number | null
           status?: string
           title: string
@@ -313,6 +315,7 @@ export type Database = {
           id?: string
           internal_revisions?: number | null
           notion_id?: string | null
+          project_code?: string | null
           sentiment_score?: number | null
           status?: string
           title?: string

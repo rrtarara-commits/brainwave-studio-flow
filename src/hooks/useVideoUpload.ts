@@ -51,6 +51,7 @@ export interface VideoUpload {
   projectId: string;
   fileName: string;
   fileSize: number;
+  storagePath: string | null;
   status: 'pending' | 'analyzing' | 'reviewed' | 'uploading' | 'completed' | 'failed';
   qcResult?: QCResult;
   qcPassed?: boolean;
@@ -245,6 +246,7 @@ export function useVideoUpload() {
         projectId,
         fileName: file.name,
         fileSize: file.size,
+        storagePath,
         status: 'pending',
         dismissedFlags: [],
         analysisMode,
@@ -400,6 +402,15 @@ export function useVideoUpload() {
     setIsDeepAnalyzing(false);
   }, []);
 
+  // Update filename after rename
+  const updateFilename = useCallback((newFilename: string, newStoragePath: string) => {
+    setUpload(prev => prev ? { 
+      ...prev, 
+      fileName: newFilename,
+      storagePath: newStoragePath,
+    } : null);
+  }, []);
+
   return {
     upload,
     isUploading,
@@ -408,6 +419,7 @@ export function useVideoUpload() {
     uploadVideo,
     dismissFlag,
     submitToFrameio,
+    updateFilename,
     reset,
   };
 }
