@@ -41,12 +41,17 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Authenticate using GCP callback secret
-    const gcpSecret = req.headers.get('x-gcp-secret');
-    const expectedSecret = Deno.env.get('GCP_CALLBACK_SECRET');
+    // Authenticate using GCP callback secret (trim to avoid newline/whitespace mismatches)
+    const gcpSecret = (req.headers.get('x-gcp-secret') ?? '').trim();
+    const expectedSecret = (Deno.env.get('GCP_CALLBACK_SECRET') ?? '').trim();
 
-    if (!gcpSecret || gcpSecret !== expectedSecret) {
-      console.error('Invalid or missing GCP secret');
+    if (!gcpSecret || !expectedSecret || gcpSecret !== expectedSecret) {
+      console.error('Invalid or missing GCP secret', {
+        hasProvidedSecret: Boolean(gcpSecret),
+        hasExpectedSecret: Boolean(expectedSecret),
+        providedLength: gcpSecret.length,
+        expectedLength: expectedSecret.length,
+      });
       return new Response(
         JSON.stringify({ error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
