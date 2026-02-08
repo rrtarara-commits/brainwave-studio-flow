@@ -31,9 +31,9 @@ DIALOGUE_TOLERANCE_DB = 3.0
 PEAK_ERROR_THRESHOLD_DB = -0.5
 PEAK_WARNING_THRESHOLD_DB = -1.0
 
-# Analysis mode settings
-QUICK_MODE_FRAMES = 5
-THOROUGH_MODE_FRAMES = 15
+# Analysis mode settings - frames distributed across ENTIRE video
+QUICK_MODE_FRAMES = 8  # More frames for better coverage
+THOROUGH_MODE_FRAMES = 20  # Increased for full video analysis
 SCENE_CHANGE_THRESHOLD = 0.3  # Lower = more sensitive
 
 # Initialize Vertex AI
@@ -196,30 +196,49 @@ def detect_freeze_frames(video_path: str) -> list[dict]:
 
 
 def extract_frames_smart(video_path: str, temp_dir: str, mode: str = 'thorough') -> list[str]:
-    """Extract frames using smart sampling based on scene changes."""
+    """Extract frames distributed across the ENTIRE video duration."""
     frame_paths = []
     duration = get_video_duration(video_path)
     
+    print(f"Video duration: {duration:.1f}s, mode: {mode}")
+    
     if mode == 'quick':
-        # Quick mode: uniform sampling with fewer frames
+        # Quick mode: uniform sampling across entire video
         num_frames = QUICK_MODE_FRAMES
-        interval = duration / (num_frames + 1)
-        timestamps = [interval * i for i in range(1, num_frames + 1)]
+        # Distribute evenly from 5% to 95% of video to ensure full coverage
+        timestamps = []
+        for i in range(num_frames):
+            # Map i to range [0.05, 0.95] of duration
+            position = 0.05 + (0.90 * i / (num_frames - 1)) if num_frames > 1 else 0.5
+            timestamps.append(duration * position)
+        print(f"Quick mode: sampling at {[f'{t:.1f}s' for t in timestamps]}")
     else:
         # Thorough mode: combine uniform sampling with scene-change sampling
         scene_changes = detect_scene_changes(video_path, SCENE_CHANGE_THRESHOLD)
         
-        # Start with uniform samples
+        # Distribute uniform samples across ENTIRE video (beginning, middle, end)
         num_uniform = THOROUGH_MODE_FRAMES // 2
-        interval = duration / (num_uniform + 1)
-        uniform_timestamps = [interval * i for i in range(1, num_uniform + 1)]
+        uniform_timestamps = []
+        for i in range(num_uniform):
+            # Map to range [0.03, 0.97] of duration for full coverage
+            position = 0.03 + (0.94 * i / (num_uniform - 1)) if num_uniform > 1 else 0.5
+            uniform_timestamps.append(duration * position)
         
-        # Add frames around scene changes (just after the cut)
+        # Sample scene changes from across entire video, not just first 10
+        # Divide video into segments and pick scene changes from each segment
         scene_timestamps = []
-        for sc in scene_changes[:10]:  # Limit to first 10 scene changes
-            # Sample just after the cut to catch glitches at transitions
-            if sc + 0.1 < duration:
-                scene_timestamps.append(sc + 0.1)
+        if scene_changes:
+            num_segments = 5
+            segment_duration = duration / num_segments
+            for seg in range(num_segments):
+                seg_start = seg * segment_duration
+                seg_end = (seg + 1) * segment_duration
+                # Find scene changes in this segment
+                seg_scenes = [sc for sc in scene_changes if seg_start <= sc < seg_end]
+                # Take up to 2 scene changes per segment
+                for sc in seg_scenes[:2]:
+                    if sc + 0.1 < duration:
+                        scene_timestamps.append(sc + 0.1)
         
         # Merge and deduplicate (keep unique timestamps at least 0.5s apart)
         all_timestamps = sorted(set(uniform_timestamps + scene_timestamps))
@@ -231,8 +250,10 @@ def extract_frames_smart(video_path: str, temp_dir: str, mode: str = 'thorough')
                 last_ts = ts
         
         timestamps = timestamps[:THOROUGH_MODE_FRAMES]  # Cap at max frames
+        print(f"Thorough mode: {len(uniform_timestamps)} uniform + {len(scene_timestamps)} scene-based samples")
+        print(f"Final timestamps: {[f'{t:.1f}s' for t in timestamps]}")
     
-    print(f"Extracting {len(timestamps)} frames in {mode} mode")
+    print(f"Extracting {len(timestamps)} frames across {duration:.1f}s video")
     
     for i, timestamp in enumerate(timestamps):
         frame_path = os.path.join(temp_dir, f"frame_{i:03d}.jpg")
