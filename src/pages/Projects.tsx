@@ -30,7 +30,17 @@ import {
   Upload,
   ExternalLink,
   Video,
+  LayoutGrid,
+  List,
 } from 'lucide-react';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { cn } from '@/lib/utils';
 
 interface AIPrediction {
@@ -47,6 +57,7 @@ export default function Projects() {
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [viewMode, setViewMode] = useState<'card' | 'list'>('card');
   
   // Scope Sentinel state
   const [sentinelOpen, setSentinelOpen] = useState(false);
@@ -296,7 +307,7 @@ export default function Projects() {
         </div>
 
         {/* Filters */}
-        <div className="flex flex-col gap-4 sm:flex-row">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
@@ -306,35 +317,73 @@ export default function Projects() {
               className="pl-10 bg-input border-border"
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-full sm:w-48 bg-input border-border">
-              <Filter className="h-4 w-4 mr-2" />
-              <SelectValue placeholder="Filter by status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Statuses</SelectItem>
-              {PROJECT_STATUSES.map((status) => (
-                <SelectItem key={status.value} value={status.value}>
-                  {status.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="flex gap-2">
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-full sm:w-44 bg-input border-border">
+                <Filter className="h-4 w-4 mr-2" />
+                <SelectValue placeholder="Filter by status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                {PROJECT_STATUSES.map((status) => (
+                  <SelectItem key={status.value} value={status.value}>
+                    {status.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {/* View Toggle */}
+            <div className="flex border border-border rounded-md overflow-hidden">
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  'rounded-none h-9 px-3',
+                  viewMode === 'card' && 'bg-muted'
+                )}
+                onClick={() => setViewMode('card')}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  'rounded-none h-9 px-3 border-l border-border',
+                  viewMode === 'list' && 'bg-muted'
+                )}
+                onClick={() => setViewMode('list')}
+              >
+                <List className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         </div>
 
-        {/* Projects Grid */}
+        {/* Projects */}
         {isLoading ? (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <Card key={i} className="glass-card">
-                <CardContent className="p-6">
-                  <div className="skeleton h-6 w-3/4 mb-4" />
-                  <div className="skeleton h-4 w-1/2 mb-2" />
-                  <div className="skeleton h-4 w-full" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          viewMode === 'card' ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                <Card key={i} className="glass-card">
+                  <CardContent className="p-4">
+                    <div className="skeleton h-5 w-3/4 mb-2" />
+                    <div className="skeleton h-4 w-1/2" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <Card className="glass-card">
+              <CardContent className="p-4">
+                <div className="space-y-3">
+                  {[1, 2, 3, 4, 5].map((i) => (
+                    <div key={i} className="skeleton h-10 w-full" />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )
         ) : filteredProjects.length === 0 ? (
           <Card className="glass-card">
             <CardContent className="py-12 text-center">
@@ -346,47 +395,63 @@ export default function Projects() {
               )}
             </CardContent>
           </Card>
-        ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        ) : viewMode === 'card' ? (
+          /* Card View - Condensed */
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {filteredProjects.map((project) => (
               <Card
                 key={project.id}
                 className="glass-card hover-lift cursor-pointer group"
                 onClick={() => navigate(`/projects/${project.id}`)}
               >
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between">
-                    <CardTitle className="text-lg line-clamp-1">
-                      {project.title}
-                    </CardTitle>
-                    <ChevronRight className="h-5 w-5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                <CardContent className="p-4 space-y-3">
+                  {/* Title & Client */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <h3 className="font-semibold text-sm line-clamp-1">
+                        {project.title}
+                      </h3>
+                      <p className="text-xs text-muted-foreground line-clamp-1">
+                        {project.client_name || 'No client'}
+                      </p>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {project.client_name || 'No client'}
-                  </p>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Status & Actions */}
-                  <div className="flex items-center justify-between">
+
+                  {/* Status & Stats Row */}
+                  <div className="flex items-center justify-between gap-2">
                     <span
                       className={cn(
-                        'text-xs px-2.5 py-1 rounded-full',
+                        'text-xs px-2 py-0.5 rounded-full whitespace-nowrap',
                         getStatusColor(project.status)
                       )}
                     >
                       {project.status.replace(/_/g, ' ')}
                     </span>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <DollarSign className="h-3 w-3" />
+                        {Number(project.client_budget || 0).toLocaleString()}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <GitBranch className="h-3 w-3" />
+                        {project.billable_revisions + project.internal_revisions}
+                      </span>
+                      {project.ai_thought_trace && (
+                        <Brain className="h-3 w-3 text-primary" />
+                      )}
+                    </div>
+                  </div>
 
+                  {/* Actions */}
+                  <div className="flex gap-2">
                     {(isAdmin || isProducer) && (
                       <Select
                         value={project.status}
-                        onValueChange={(value) => {
-                          // Prevent navigation when clicking dropdown
-                          handleStatusChange(project, value);
-                        }}
+                        onValueChange={(value) => handleStatusChange(project, value)}
                       >
                         <SelectTrigger
-                          className="w-auto h-8 text-xs bg-secondary border-0"
+                          className="h-7 text-xs bg-secondary border-0 flex-1"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <SelectValue />
@@ -400,55 +465,26 @@ export default function Projects() {
                         </SelectContent>
                       </Select>
                     )}
-                  </div>
-
-                  {/* Stats */}
-                  <div className="flex items-center gap-4 text-sm">
-                    <div className="flex items-center gap-1.5 text-muted-foreground">
-                      <DollarSign className="h-4 w-4" />
-                      <span>
-                        ${Number(project.client_budget || 0).toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-muted-foreground">
-                      <GitBranch className="h-4 w-4" />
-                      <span>
-                        {project.billable_revisions + project.internal_revisions} rev
-                      </span>
-                    </div>
-                    {project.ai_thought_trace && (
-                      <div className="flex items-center gap-1.5 text-primary">
-                        <Brain className="h-4 w-4" />
-                        <span className="text-xs">AI</span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Frame.io Link & Upload */}
-                  <div className="flex items-center gap-2 pt-2 border-t border-border">
                     {(project as any).frameio_link ? (
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1 text-xs"
+                        className="h-7 text-xs px-2"
                         onClick={(e) => {
                           e.stopPropagation();
                           window.open((project as any).frameio_link, '_blank');
                         }}
                       >
-                        <Video className="h-3 w-3 mr-1" />
-                        View on Frame.io
-                        <ExternalLink className="h-3 w-3 ml-1" />
+                        <Video className="h-3 w-3" />
                       </Button>
                     ) : (
                       <Button
                         variant="outline"
                         size="sm"
-                        className="flex-1 text-xs"
+                        className="h-7 text-xs px-2"
                         onClick={(e) => openUploadModal(project, e)}
                       >
-                        <Upload className="h-3 w-3 mr-1" />
-                        Upload Video
+                        <Upload className="h-3 w-3" />
                       </Button>
                     )}
                   </div>
@@ -456,6 +492,106 @@ export default function Projects() {
               </Card>
             ))}
           </div>
+        ) : (
+          /* List View */
+          <Card className="glass-card overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Project</TableHead>
+                  <TableHead>Client</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Budget</TableHead>
+                  <TableHead className="text-right">Rev</TableHead>
+                  <TableHead className="w-[100px]"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredProjects.map((project) => (
+                  <TableRow
+                    key={project.id}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => navigate(`/projects/${project.id}`)}
+                  >
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2">
+                        {project.title}
+                        {project.ai_thought_trace && (
+                          <Brain className="h-3 w-3 text-primary" />
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {project.client_name || '—'}
+                    </TableCell>
+                    <TableCell>
+                      <span
+                        className={cn(
+                          'text-xs px-2 py-0.5 rounded-full whitespace-nowrap',
+                          getStatusColor(project.status)
+                        )}
+                      >
+                        {project.status.replace(/_/g, ' ')}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      ${Number(project.client_budget || 0).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {project.billable_revisions + project.internal_revisions}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center justify-end gap-1">
+                        {(isAdmin || isProducer) && (
+                          <Select
+                            value={project.status}
+                            onValueChange={(value) => handleStatusChange(project, value)}
+                          >
+                            <SelectTrigger
+                              className="h-7 w-7 p-0 bg-secondary border-0"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Filter className="h-3 w-3" />
+                            </SelectTrigger>
+                            <SelectContent onClick={(e) => e.stopPropagation()}>
+                              {PROJECT_STATUSES.map((status) => (
+                                <SelectItem key={status.value} value={status.value}>
+                                  {status.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                        {(project as any).frameio_link ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              window.open((project as any).frameio_link, '_blank');
+                            }}
+                          >
+                            <Video className="h-3 w-3" />
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={(e) => openUploadModal(project, e)}
+                          >
+                            <Upload className="h-3 w-3" />
+                          </Button>
+                        )}
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Card>
         )}
       </div>
 
