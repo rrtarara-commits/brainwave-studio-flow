@@ -4,12 +4,16 @@ Event-driven video analysis pipeline using FFmpeg and Vertex AI (Gemini)
 """
 
 import os
+import re
 import json
 import base64
 import tempfile
 import subprocess
 import requests
 from flask import Flask, request, jsonify
+from google.cloud import storage
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
 from google.cloud import storage
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
@@ -411,17 +415,25 @@ def handle_gcs_event():
         print(f"Skipping non-video file: {blob_name}")
         return jsonify({'skipped': True, 'reason': 'not a video file'}), 200
     
-    # Extract upload ID from path (format: uploads/{upload_id}/{filename} or uploads/{filename})
+    # Extract upload ID from path
+    # Expected format: uploads/{uuid}/{filename}
+    # The {uuid} MUST be a valid UUID that exists in video_uploads table
     path_parts = blob_name.split('/')
-    if len(path_parts) >= 3 and path_parts[0] == 'uploads':
-        # Format: uploads/{upload_id}/{filename}
-        upload_id = path_parts[1]
-    elif len(path_parts) >= 2 and path_parts[0] == 'uploads':
-        # Format: uploads/{filename} - use filename without extension as ID
-        upload_id = os.path.splitext(path_parts[1])[0]
-    else:
-        # Fallback: use first path part
-        upload_id = path_parts[0]
+    upload_id = None
+    
+    # Look for a UUID pattern in path parts (Supabase uses gen_random_uuid())
+    uuid_pattern = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', re.IGNORECASE)
+    
+    for part in path_parts:
+        if uuid_pattern.match(part):
+            upload_id = part
+            break
+    
+    if not upload_id:
+        print(f"Skipping file without valid UUID in path: {blob_name}")
+        print(f"  Expected format: uploads/{{uuid}}/{{filename}}")
+        print(f"  Path parts: {path_parts}")
+        return jsonify({'skipped': True, 'reason': 'no valid UUID in path'}), 200
     
     print(f"Processing video: {blob_name} (upload_id: {upload_id})")
     
