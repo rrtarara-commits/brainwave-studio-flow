@@ -19,7 +19,8 @@ app = Flask(__name__)
 # Configuration
 GCS_BUCKET = os.environ.get('GCS_BUCKET', 'tcv-video-uploads')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
-GCP_CALLBACK_SECRET = os.environ.get('GCP_CALLBACK_SECRET')
+# Strip whitespace/newlines from secret to prevent header errors
+GCP_CALLBACK_SECRET = (os.environ.get('GCP_CALLBACK_SECRET') or '').strip()
 PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT')
 
 # Audio analysis thresholds
@@ -399,12 +400,28 @@ def handle_gcs_event():
     if not blob_name:
         return jsonify({'error': 'No file name in event'}), 400
     
-    # Extract upload ID from path (format: uploads/{upload_id}/{filename})
-    path_parts = blob_name.split('/')
-    if len(path_parts) < 2:
-        return jsonify({'error': 'Invalid file path format'}), 400
+    # Skip folder objects (folders trigger events too but can't be downloaded)
+    if blob_name.endswith('/'):
+        print(f"Skipping folder object: {blob_name}")
+        return jsonify({'skipped': True, 'reason': 'folder object'}), 200
     
-    upload_id = path_parts[1] if path_parts[0] == 'uploads' else path_parts[0]
+    # Only process video files
+    video_extensions = ('.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mxf', '.prores')
+    if not blob_name.lower().endswith(video_extensions):
+        print(f"Skipping non-video file: {blob_name}")
+        return jsonify({'skipped': True, 'reason': 'not a video file'}), 200
+    
+    # Extract upload ID from path (format: uploads/{upload_id}/{filename} or uploads/{filename})
+    path_parts = blob_name.split('/')
+    if len(path_parts) >= 3 and path_parts[0] == 'uploads':
+        # Format: uploads/{upload_id}/{filename}
+        upload_id = path_parts[1]
+    elif len(path_parts) >= 2 and path_parts[0] == 'uploads':
+        # Format: uploads/{filename} - use filename without extension as ID
+        upload_id = os.path.splitext(path_parts[1])[0]
+    else:
+        # Fallback: use first path part
+        upload_id = path_parts[0]
     
     print(f"Processing video: {blob_name} (upload_id: {upload_id})")
     
