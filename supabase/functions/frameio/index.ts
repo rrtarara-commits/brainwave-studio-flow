@@ -5,6 +5,13 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+interface QCComment {
+  text: string;
+  timestamp?: number | null; // seconds
+  type?: 'error' | 'warning' | 'info';
+  category?: string;
+}
+
 interface FrameIORequest {
   action: 'get_feedback' | 'upload' | 'get_projects' | 'get_assets' | 'get_auth_url' | 'exchange_code' | 'disconnect';
   projectId?: string;
@@ -15,6 +22,7 @@ interface FrameIORequest {
   fileSize?: number;
   code?: string;
   redirectUri?: string;
+  qcComments?: QCComment[]; // QC flags to post as comments
 }
 
 const FRAMEIO_V4_API_BASE = 'https://api.frame.io/v4';
@@ -245,6 +253,54 @@ async function uploadToV4(
   }
 
   return { assetId, shareLink };
+}
+
+// Post QC comments to an asset with timestamps
+async function postCommentsToAsset(
+  accessToken: string,
+  accountId: string,
+  assetId: string,
+  comments: QCComment[]
+): Promise<{ posted: number; failed: number }> {
+  let posted = 0;
+  let failed = 0;
+
+  for (const comment of comments) {
+    try {
+      // Format comment text with type indicator
+      const typeEmoji = comment.type === 'error' ? '🔴' : comment.type === 'warning' ? '🟡' : 'ℹ️';
+      const categoryPrefix = comment.category ? `[${comment.category}] ` : '';
+      const text = `${typeEmoji} ${categoryPrefix}${comment.text}`;
+
+      const commentBody: Record<string, unknown> = {
+        data: {
+          text,
+        },
+      };
+
+      // Add timestamp if provided (in seconds)
+      if (comment.timestamp != null && comment.timestamp >= 0) {
+        commentBody.data = {
+          ...commentBody.data as Record<string, unknown>,
+          timestamp: comment.timestamp,
+        };
+      }
+
+      await frameioV4Request(
+        accessToken,
+        `/accounts/${accountId}/assets/${assetId}/comments`,
+        'POST',
+        commentBody
+      );
+      posted++;
+      console.log(`Posted comment at ${comment.timestamp ?? 'no timestamp'}: ${text.substring(0, 50)}...`);
+    } catch (err) {
+      console.error('Failed to post comment:', err);
+      failed++;
+    }
+  }
+
+  return { posted, failed };
 }
 
 Deno.serve(async (req) => {
@@ -554,10 +610,40 @@ Deno.serve(async (req) => {
             .eq('id', body.projectId);
         }
 
+        // Post QC comments as Frame.io comments (in background)
+        let commentsResult = { posted: 0, failed: 0 };
+        if (body.qcComments && body.qcComments.length > 0) {
+          console.log(`Posting ${body.qcComments.length} QC comments to asset ${assetId}`);
+          
+          // Use EdgeRuntime.waitUntil for background task
+          // Comments are posted after the response is sent
+          EdgeRuntime.waitUntil(
+            (async () => {
+              try {
+                // Wait a few seconds for the asset to be ready
+                await new Promise(resolve => setTimeout(resolve, 3000));
+                
+                const result = await postCommentsToAsset(
+                  v4Token.accessToken,
+                  v4Token.accountId,
+                  assetId,
+                  body.qcComments!
+                );
+                console.log(`Posted ${result.posted} comments, ${result.failed} failed`);
+              } catch (err) {
+                console.error('Failed to post QC comments:', err);
+              }
+            })()
+          );
+          
+          commentsResult = { posted: body.qcComments.length, failed: 0 }; // Optimistic
+        }
+
         result = {
           assetId,
           shareLink,
           message: 'Upload initiated successfully (remote upload)',
+          commentsQueued: commentsResult.posted,
         };
         break;
       }

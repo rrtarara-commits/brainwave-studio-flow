@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search } from 'lucide-react';
+import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search, MessageSquare } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
 import { QCFlagsList } from './QCFlagsList';
 import { FilenameStandardizer } from './FilenameStandardizer';
@@ -54,6 +54,7 @@ export function VideoUploadModal({
   const [manualFeedback, setManualFeedback] = useState<string>('');
   const [useManualEntry, setUseManualEntry] = useState(false);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('thorough');
+  const [includeQcComments, setIncludeQcComments] = useState(true);
   const location = useLocation();
 
   const {
@@ -135,7 +136,7 @@ export function VideoUploadModal({
     
     const projectIdToUse = extractFrameioProjectId(selectedFrameioProject);
     setStep('submit');
-    const link = await submitToFrameio(projectIdToUse);
+    const link = await submitToFrameio(projectIdToUse, includeQcComments);
     
     if (link) {
       onComplete?.(link);
@@ -412,6 +413,25 @@ export function VideoUploadModal({
                 <p className="text-sm">
                   You have unresolved errors. Dismiss them to proceed or fix the issues.
                 </p>
+              </div>
+            )}
+
+            {/* QC Comments Toggle */}
+            {upload.qcResult.flags.filter(f => !upload.dismissedFlags.includes(f.id)).length > 0 && (
+              <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/30">
+                <div className="flex items-center gap-3">
+                  <MessageSquare className="h-5 w-5 text-primary" />
+                  <div>
+                    <p className="font-medium text-sm">Attach QC Notes as Comments</p>
+                    <p className="text-xs text-muted-foreground">
+                      {upload.qcResult.flags.filter(f => !upload.dismissedFlags.includes(f.id)).length} notes will be added to Frame.io with timestamps
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  checked={includeQcComments}
+                  onCheckedChange={setIncludeQcComments}
+                />
               </div>
             )}
 
