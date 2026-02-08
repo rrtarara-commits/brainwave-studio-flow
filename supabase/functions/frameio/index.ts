@@ -186,14 +186,15 @@ async function getV4Projects(accessToken: string): Promise<any[]> {
   return allProjects;
 }
 
-// Upload file to V4 (remote upload)
+// Upload file to V4 (remote upload) with optional version stacking
 async function uploadToV4(
   accessToken: string,
   accountId: string,
   projectId: string,
   fileName: string,
-  sourceUrl: string
-): Promise<{ assetId: string; shareLink: string }> {
+  sourceUrl: string,
+  previousAssetId?: string | null // If provided, stack on this asset
+): Promise<{ assetId: string; reviewLink: string; versionStacked: boolean }> {
   // Get project to find root folder
   const project = await frameioV4Request(accessToken, `/accounts/${accountId}/projects/${projectId}`);
   const rootFolderId = project.root_folder_id || project.data?.root_folder_id;
@@ -217,42 +218,85 @@ async function uploadToV4(
     }
   );
 
-  const assetId = uploadResponse.data?.id || uploadResponse.id;
-  console.log('Remote upload initiated, asset ID:', assetId);
+  const newAssetId = uploadResponse.data?.id || uploadResponse.id;
+  console.log('Remote upload initiated, asset ID:', newAssetId);
 
-  // Create share link
-  let shareLink = `https://next.frame.io/project/${projectId}`;
+  let versionStacked = false;
+  let assetForReview = newAssetId;
+
+  // If there's a previous asset, add to version stack
+  if (previousAssetId) {
+    try {
+      console.log(`Stacking new asset ${newAssetId} on previous asset ${previousAssetId}`);
+      
+      // V4 API: POST to /assets/{destination_id}/version with source asset
+      const stackResponse = await frameioV4Request(
+        accessToken,
+        `/accounts/${accountId}/assets/${previousAssetId}/version`,
+        'POST',
+        {
+          data: {
+            asset_id: newAssetId,
+          },
+        }
+      );
+      
+      // The stack response may return a stack ID or the updated asset
+      assetForReview = stackResponse.data?.id || previousAssetId;
+      versionStacked = true;
+      console.log('Version stack created/updated:', assetForReview);
+    } catch (stackError) {
+      console.error('Failed to create version stack:', stackError);
+      // Continue without stacking - the new asset is still uploaded
+    }
+  }
+
+  // Create a proper review link for the specific asset
+  let reviewLink = `https://next.frame.io/project/${projectId}`;
   try {
+    // Create share with review type
     const shareResponse = await frameioV4Request(
       accessToken,
       `/accounts/${accountId}/projects/${projectId}/shares`,
       'POST',
       {
         data: {
-          name: `Share: ${fileName}`,
+          name: `Review: ${fileName}`,
+          type: 'review', // Explicitly request review link
           expires_at: null,
         },
       }
     );
 
-    if (shareResponse.data?.short_url) {
-      shareLink = shareResponse.data.short_url;
-    } else if (shareResponse.data?.id) {
-      // Attach asset to share
-      await frameioV4Request(
-        accessToken,
-        `/accounts/${accountId}/shares/${shareResponse.data.id}/assets`,
-        'POST',
-        { data: { asset_id: assetId } }
-      );
-      shareLink = shareResponse.data.short_url || `https://next.frame.io/share/${shareResponse.data.id}`;
+    const shareId = shareResponse.data?.id || shareResponse.id;
+    
+    if (shareId) {
+      // Attach the asset to the share
+      try {
+        await frameioV4Request(
+          accessToken,
+          `/accounts/${accountId}/shares/${shareId}/assets`,
+          'POST',
+          { data: { asset_id: assetForReview } }
+        );
+      } catch (attachError) {
+        console.error('Failed to attach asset to share:', attachError);
+      }
+
+      // Get the review URL
+      reviewLink = shareResponse.data?.short_url || 
+                   shareResponse.data?.url ||
+                   `https://next.frame.io/reviews/${shareId}`;
     }
+    
+    console.log('Review link created:', reviewLink);
   } catch (shareError) {
-    console.error('Failed to create share link:', shareError);
-    // Use project link as fallback
+    console.error('Failed to create review link:', shareError);
+    // Fallback to asset player link
+    reviewLink = `https://next.frame.io/player/${assetForReview}`;
   }
 
-  return { assetId, shareLink };
+  return { assetId: newAssetId, reviewLink, versionStacked };
 }
 
 // Post QC comments to an asset with timestamps
@@ -568,6 +612,34 @@ Deno.serve(async (req) => {
           }
         }
 
+        // Check if project already has an asset to version stack on
+        let previousAssetId: string | null = null;
+        if (body.projectId) {
+          const { data: projectData } = await serviceClient
+            .from('projects')
+            .select('frameio_project_id')
+            .eq('id', body.projectId)
+            .single();
+          
+          // Find the most recent completed upload for this project with a frameio_asset_id
+          if (projectData?.frameio_project_id === body.frameioProjectId) {
+            const { data: previousUpload } = await serviceClient
+              .from('video_uploads')
+              .select('frameio_asset_id')
+              .eq('project_id', body.projectId)
+              .eq('status', 'completed')
+              .not('frameio_asset_id', 'is', null)
+              .order('completed_at', { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (previousUpload?.frameio_asset_id) {
+              previousAssetId = previousUpload.frameio_asset_id;
+              console.log('Found previous asset for version stacking:', previousAssetId);
+            }
+          }
+        }
+
         // Create signed URL for the file
         const { data: signedUrlData, error: signedUrlError } = await serviceClient.storage
           .from('video-uploads')
@@ -579,32 +651,34 @@ Deno.serve(async (req) => {
 
         console.log('Created signed URL for remote upload');
 
-        // Upload to Frame.io V4
-        const { assetId, shareLink } = await uploadToV4(
+        // Upload to Frame.io V4 (with optional version stacking)
+        const { assetId, reviewLink, versionStacked } = await uploadToV4(
           v4Token.accessToken,
           v4Token.accountId,
           body.frameioProjectId,
           body.fileName,
-          signedUrlData.signedUrl
+          signedUrlData.signedUrl,
+          previousAssetId
         );
 
-        // Update records
+        // Update records with new review link
         await serviceClient
           .from('video_uploads')
           .update({
             frameio_asset_id: assetId,
             frameio_project_id: body.frameioProjectId,
-            frameio_link: shareLink,
+            frameio_link: reviewLink,
             status: 'completed',
             completed_at: new Date().toISOString(),
           })
           .eq('id', body.uploadId);
 
+        // Update project with the latest review link
         if (body.projectId) {
           await serviceClient
             .from('projects')
             .update({
-              frameio_link: shareLink,
+              frameio_link: reviewLink, // Always update to latest review link
               frameio_project_id: body.frameioProjectId,
             })
             .eq('id', body.projectId);
@@ -641,8 +715,11 @@ Deno.serve(async (req) => {
 
         result = {
           assetId,
-          shareLink,
-          message: 'Upload initiated successfully (remote upload)',
+          shareLink: reviewLink,
+          versionStacked,
+          message: versionStacked 
+            ? 'New version uploaded and stacked successfully' 
+            : 'Upload initiated successfully (remote upload)',
           commentsQueued: commentsResult.posted,
         };
         break;
