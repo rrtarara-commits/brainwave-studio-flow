@@ -64,7 +64,7 @@ steps:
       - '--liveness-probe-timeout=5'
       # Service account for GCS/Vertex AI access
       - '--service-account'
-      - 'tcv-analyzer@${PROJECT_ID}.iam.gserviceaccount.com'
+      - 'tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com'
       # Environment variables
       - '--set-env-vars'
       - 'GCS_BUCKET=${_GCS_BUCKET},SUPABASE_URL=${_SUPABASE_URL}'
