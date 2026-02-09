@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
+import { createErrorResponse } from '../_shared/error-utils.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -48,7 +49,7 @@ async function frameioV4Request(
   if (!response.ok) {
     const errorText = await response.text();
     console.error(`Frame.io V4 API error: ${response.status}`, errorText);
-    throw new Error(`Frame.io API error: ${response.status} - ${errorText}`);
+    throw new Error('Frame.io service temporarily unavailable');
   }
 
   return response.json();
@@ -735,10 +736,6 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Frame.io function error:', error);
-    return new Response(
-      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return createErrorResponse(error, 'Frame.io', corsHeaders);
   }
 });

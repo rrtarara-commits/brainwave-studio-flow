@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
+import { createErrorResponse, sanitizeExternalApiError } from '../_shared/error-utils.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -370,10 +371,12 @@ Deno.serve(async (req) => {
     const { pages, error: fetchError } = await fetchNotionDatabase(projectsDbId, notionApiKey);
     
     if (fetchError) {
+      console.error('Notion database fetch error:', fetchError);
       return new Response(
         JSON.stringify({
           success: false,
-          error: fetchError,
+          errorCode: 'NOTION_ACCESS_ERROR',
+          message: 'Unable to access Notion database',
           hint: 'Make sure your Notion integration has access to this database. Go to Notion → Share → Add your integration.',
         }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -448,12 +451,6 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Sync error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-    return new Response(
-      JSON.stringify({ success: false, error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return createErrorResponse(error, 'Notion Sync', corsHeaders);
   }
 });
