@@ -2,6 +2,9 @@
 TCV Video QC Analyzer - Cloud Run Service
 Event-driven video analysis pipeline using FFmpeg and Vertex AI (Gemini)
 Supports Quick (fast) and Thorough (comprehensive) analysis modes
+
+Architecture: Async processing with immediate HTTP response.
+GCS events trigger immediate 202 Accepted, processing runs in background thread.
 """
 
 import os
@@ -10,6 +13,8 @@ import json
 import base64
 import tempfile
 import subprocess
+import threading
+import uuid
 import requests
 from flask import Flask, request, jsonify
 from google.cloud import storage
@@ -35,6 +40,10 @@ PEAK_WARNING_THRESHOLD_DB = -1.0
 QUICK_MODE_FRAMES = 8  # More frames for better coverage
 THOROUGH_MODE_FRAMES = 20  # Increased for full video analysis
 SCENE_CHANGE_THRESHOLD = 0.3  # Lower = more sensitive
+
+# Job tracking for background processing
+processing_jobs = {}
+jobs_lock = threading.Lock()
 
 # Initialize Vertex AI
 vertexai.init(project=PROJECT_ID, location="us-central1")
@@ -660,9 +669,95 @@ def get_analysis_mode_from_metadata(bucket_name: str, blob_name: str) -> str:
         return 'thorough'  # Default to thorough
 
 
+def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: str, job_id: str):
+    """
+    Background video processing - runs in separate thread.
+    This function handles the heavy lifting: download, FFmpeg analysis, Gemini AI, and callback.
+    """
+    print(f"[Job {job_id}] Starting async processing for upload {upload_id}")
+    
+    # Update job status
+    with jobs_lock:
+        processing_jobs[job_id] = {'status': 'processing', 'upload_id': upload_id}
+    
+    try:
+        # Create temp directory for processing
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Download video
+            print(f"[Job {job_id}] Downloading video...")
+            video_path = download_video(bucket_name, blob_name, temp_dir)
+            
+            # Load known exceptions from Memory Layer
+            known_exceptions = load_known_exceptions()
+            
+            # Run analyses based on mode
+            if mode == 'quick':
+                # Quick mode: minimal analysis with QC Editor persona
+                print(f"[Job {job_id}] Running quick analysis...")
+                frames = extract_frames_smart(video_path, temp_dir, mode='quick')
+                audio_analysis = analyze_audio(video_path)
+                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick', known_exceptions=known_exceptions)
+                
+            else:
+                # Thorough mode: comprehensive analysis with Creative Director persona
+                print(f"[Job {job_id}] Running thorough analysis...")
+                frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
+                
+                # Run all detection
+                audio_analysis = analyze_audio(video_path)
+                black_frame_issues = detect_black_frames(video_path)
+                flash_frame_issues = detect_flash_frames(video_path)
+                freeze_frame_issues = detect_freeze_frames(video_path)
+                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough', known_exceptions=known_exceptions)
+                
+                # Merge all FFmpeg-detected issues into visual analysis
+                all_ffmpeg_issues = black_frame_issues + flash_frame_issues + freeze_frame_issues
+                visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
+            
+            # Submit results
+            print(f"[Job {job_id}] Submitting results...")
+            submit_results(upload_id, visual_analysis, audio_analysis, success=True)
+            
+            # Update job status
+            with jobs_lock:
+                processing_jobs[job_id] = {
+                    'status': 'completed',
+                    'upload_id': upload_id,
+                    'frames_analyzed': len(frames),
+                    'visual_issues': len(visual_analysis.get('issues', [])),
+                    'audio_issues': len(audio_analysis.get('issues', []))
+                }
+            
+            print(f"[Job {job_id}] Processing complete for upload {upload_id}")
+            
+    except Exception as e:
+        print(f"[Job {job_id}] Analysis error: {e}")
+        
+        # Submit failure result
+        submit_results(
+            upload_id,
+            {'issues': [], 'summary': f'Analysis failed: {str(e)[:100]}'},
+            {'issues': [], 'summary': 'Analysis failed'},
+            success=False
+        )
+        
+        # Update job status
+        with jobs_lock:
+            processing_jobs[job_id] = {
+                'status': 'failed',
+                'upload_id': upload_id,
+                'error': str(e)[:200]
+            }
+
+
 @app.route('/', methods=['POST'])
 def handle_gcs_event():
-    """Handle GCS Eventarc trigger for new video uploads."""
+    """
+    Handle GCS Eventarc trigger for new video uploads.
+    
+    Returns 202 Accepted immediately and processes video in background thread.
+    This prevents Cloud Run health check timeouts for large video files.
+    """
     
     # Parse Cloud Event
     envelope = request.get_json()
@@ -715,66 +810,54 @@ def handle_gcs_event():
     # Get analysis mode from object metadata
     mode = get_analysis_mode_from_metadata(bucket_name, blob_name)
     
-    print(f"Processing video: {blob_name} (upload_id: {upload_id}, mode: {mode})")
+    print(f"Queuing video for processing: {blob_name} (upload_id: {upload_id}, mode: {mode})")
     
-    # Create temp directory for processing
-    with tempfile.TemporaryDirectory() as temp_dir:
-        try:
-            # Download video
-            video_path = download_video(bucket_name, blob_name, temp_dir)
-            
-        # Load known exceptions from Memory Layer
-            known_exceptions = load_known_exceptions()
-            
-            # Run analyses based on mode
-            if mode == 'quick':
-                # Quick mode: minimal analysis with QC Editor persona
-                frames = extract_frames_smart(video_path, temp_dir, mode='quick')
-                audio_analysis = analyze_audio(video_path)
-                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick', known_exceptions=known_exceptions)
-                
-            else:
-                # Thorough mode: comprehensive analysis with Creative Director persona
-                frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
-                
-                # Run all detection in parallel-ish (Python limitations, but still faster)
-                audio_analysis = analyze_audio(video_path)
-                black_frame_issues = detect_black_frames(video_path)
-                flash_frame_issues = detect_flash_frames(video_path)
-                freeze_frame_issues = detect_freeze_frames(video_path)
-                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough', known_exceptions=known_exceptions)
-                
-                # Merge all FFmpeg-detected issues into visual analysis
-                all_ffmpeg_issues = black_frame_issues + flash_frame_issues + freeze_frame_issues
-                visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
-            
-            # Submit results
-            submit_results(upload_id, visual_analysis, audio_analysis, success=True)
-            
-            return jsonify({
-                'success': True,
-                'uploadId': upload_id,
-                'mode': mode,
-                'framesAnalyzed': len(frames),
-                'audioIssues': len(audio_analysis.get('issues', [])),
-                'visualIssues': len(visual_analysis.get('issues', []))
-            })
-            
-        except Exception as e:
-            print(f"Analysis error: {e}")
-            submit_results(
-                upload_id,
-                {'issues': [], 'summary': f'Analysis failed: {str(e)[:100]}'},
-                {'issues': [], 'summary': 'Analysis failed'},
-                success=False
-            )
-            return jsonify({'error': str(e)}), 500
+    # Generate job ID and start background processing
+    job_id = str(uuid.uuid4())
+    
+    thread = threading.Thread(
+        target=process_video_async,
+        args=(bucket_name, blob_name, upload_id, mode, job_id),
+        daemon=True  # Daemon thread so it doesn't block container shutdown
+    )
+    thread.start()
+    
+    # Track job
+    with jobs_lock:
+        processing_jobs[job_id] = {'status': 'queued', 'upload_id': upload_id}
+    
+    # Return immediately - don't wait for processing
+    return jsonify({
+        'accepted': True,
+        'jobId': job_id,
+        'uploadId': upload_id,
+        'mode': mode,
+        'message': 'Video queued for analysis'
+    }), 202  # HTTP 202 Accepted
+
+
+@app.route('/job/<job_id>', methods=['GET'])
+def get_job_status(job_id: str):
+    """Get the status of a processing job."""
+    with jobs_lock:
+        job = processing_jobs.get(job_id)
+    
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    
+    return jsonify(job)
 
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Cloud Run."""
     return jsonify({'status': 'healthy', 'service': 'tcv-video-analyzer'})
+
+
+@app.route('/startup', methods=['GET'])
+def startup_check():
+    """Startup probe endpoint for Cloud Run."""
+    return jsonify({'status': 'ready', 'service': 'tcv-video-analyzer'})
 
 
 if __name__ == '__main__':
