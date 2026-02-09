@@ -119,8 +119,9 @@ async function getGCSAccessToken(): Promise<string | null> {
   }
 }
 
-// Copy file from Supabase Storage to GCS with analysis mode metadata
-async function copyToGCS(
+// Stream file from Supabase Storage to GCS using signed URLs
+// This avoids loading the entire file into edge function memory
+async function streamToGCS(
   serviceClient: any,
   storagePath: string,
   uploadId: string,
@@ -128,17 +129,19 @@ async function copyToGCS(
   analysisMode: string = 'thorough'
 ): Promise<boolean> {
   try {
-    console.log(`Copying ${storagePath} to GCS uploads/${uploadId}/${fileName}`);
+    console.log(`Streaming ${storagePath} to GCS uploads/${uploadId}/${fileName}`);
 
-    // Download from Supabase Storage
-    const { data: fileData, error: downloadError } = await serviceClient.storage
+    // Get a signed URL for the source file (valid for 1 hour)
+    const { data: signedUrlData, error: signedUrlError } = await serviceClient.storage
       .from('video-uploads')
-      .download(storagePath);
+      .createSignedUrl(storagePath, 3600);
 
-    if (downloadError || !fileData) {
-      console.error('Failed to download from Supabase Storage:', downloadError);
+    if (signedUrlError || !signedUrlData?.signedUrl) {
+      console.error('Failed to create signed URL:', signedUrlError);
       return false;
     }
+
+    console.log('Got signed URL for source file');
 
     // Get GCS access token
     const accessToken = await getGCSAccessToken();
@@ -147,19 +150,30 @@ async function copyToGCS(
       return false;
     }
 
-    // Upload to GCS with metadata
+    // Initiate resumable upload to GCS with metadata
     const gcsPath = `uploads/${uploadId}/${fileName}`;
-    
-    // Use resumable upload to set metadata
     const initUrl = `${GCS_API_URL}/${GCS_BUCKET}/o?uploadType=resumable&name=${encodeURIComponent(gcsPath)}`;
     
-    // First, initiate resumable upload with metadata
+    // Determine content type based on file extension
+    const ext = fileName.toLowerCase().split('.').pop();
+    const contentTypeMap: Record<string, string> = {
+      'mp4': 'video/mp4',
+      'mov': 'video/quicktime',
+      'avi': 'video/x-msvideo',
+      'mkv': 'video/x-matroska',
+      'webm': 'video/webm',
+      'm4v': 'video/x-m4v',
+      'mxf': 'application/mxf',
+      'prores': 'video/prores',
+    };
+    const contentType = contentTypeMap[ext || ''] || 'video/mp4';
+
     const initResponse = await fetch(initUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
-        'X-Upload-Content-Type': 'video/mp4',
+        'X-Upload-Content-Type': contentType,
       },
       body: JSON.stringify({
         name: gcsPath,
@@ -182,13 +196,28 @@ async function copyToGCS(
       return false;
     }
 
-    // Upload the actual file
+    console.log('Got GCS resumable upload URL, starting stream...');
+
+    // Stream the file from Supabase to GCS
+    // Fetch the file from Supabase signed URL
+    const sourceResponse = await fetch(signedUrlData.signedUrl);
+    if (!sourceResponse.ok || !sourceResponse.body) {
+      console.error('Failed to fetch source file:', sourceResponse.status);
+      return false;
+    }
+
+    // Get content length for upload
+    const contentLength = sourceResponse.headers.get('Content-Length');
+    
+    // Stream directly to GCS
+    // Note: We use the body stream directly to avoid loading into memory
     const uploadResponse = await fetch(uploadUrl, {
       method: 'PUT',
       headers: {
-        'Content-Type': 'video/mp4',
+        'Content-Type': contentType,
+        ...(contentLength ? { 'Content-Length': contentLength } : {}),
       },
-      body: fileData,
+      body: sourceResponse.body,
     });
 
     if (!uploadResponse.ok) {
@@ -197,10 +226,10 @@ async function copyToGCS(
       return false;
     }
 
-    console.log(`Successfully copied to GCS: ${gcsPath}`);
+    console.log(`Successfully streamed to GCS: ${gcsPath}`);
     return true;
   } catch (error) {
-    console.error('Error copying to GCS:', error);
+    console.error('Error streaming to GCS:', error);
     return false;
   }
 }
@@ -525,20 +554,21 @@ Deno.serve(async (req) => {
 
     console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags`);
 
-    // Copy file to GCS to trigger deep analysis (runs in background)
+    // Stream file to GCS to trigger deep analysis (runs in background)
+    // Uses streaming to avoid 150MB edge function memory limit
     const mode = analysisMode || 'thorough';
     EdgeRuntime.waitUntil(
       (async () => {
-        console.log(`Starting background GCS upload (mode: ${mode})...`);
-        const gcsCopySuccess = await copyToGCS(serviceClient, storagePath, uploadId, fileName, mode);
+        console.log(`Starting background GCS streaming upload (mode: ${mode})...`);
+        const gcsCopySuccess = await streamToGCS(serviceClient, storagePath, uploadId, fileName, mode);
         if (gcsCopySuccess) {
-          console.log(`GCS upload complete for ${uploadId}, deep analysis will be triggered`);
+          console.log(`GCS streaming upload complete for ${uploadId}, deep analysis will be triggered`);
           await serviceClient
             .from('video_uploads')
             .update({ deep_analysis_status: 'processing' })
             .eq('id', uploadId);
         } else {
-          console.error(`GCS upload failed for ${uploadId}`);
+          console.error(`GCS streaming upload failed for ${uploadId}`);
           await serviceClient
             .from('video_uploads')
             .update({ deep_analysis_status: 'failed' })
