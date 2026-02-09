@@ -52,16 +52,11 @@ steps:
       # Startup CPU boost for faster cold starts
       - '--startup-cpu-boost'
       # Startup probe configuration - ensures container is healthy before receiving traffic
-      - '--startup-probe-path=/startup'
-      - '--startup-probe-initial-delay=0'
-      - '--startup-probe-period=10'
-      - '--startup-probe-failure-threshold=3'
-      - '--startup-probe-timeout=5'
+      - '--startup-probe'
+      - 'httpGet.path=/startup,initialDelaySeconds=0,timeoutSeconds=5,periodSeconds=10,failureThreshold=3'
       # Liveness probe - keeps container healthy during background processing
-      - '--liveness-probe-path=/health'
-      - '--liveness-probe-period=30'
-      - '--liveness-probe-failure-threshold=3'
-      - '--liveness-probe-timeout=5'
+      - '--liveness-probe'
+      - 'httpGet.path=/health,initialDelaySeconds=0,timeoutSeconds=5,periodSeconds=30,failureThreshold=3'
       # Service account for GCS/Vertex AI access
       - '--service-account'
       - 'tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com'
