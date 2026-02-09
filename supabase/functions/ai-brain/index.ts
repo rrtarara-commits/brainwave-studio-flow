@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
+import { createErrorResponse } from '../_shared/error-utils.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -322,12 +323,6 @@ Deno.serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('AI Brain error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-    return new Response(
-      JSON.stringify({ success: false, error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return createErrorResponse(error, 'AI Brain', corsHeaders);
   }
 });

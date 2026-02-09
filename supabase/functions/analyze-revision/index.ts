@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
+import { createErrorResponse } from '../_shared/error-utils.ts';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -190,11 +191,6 @@ Based on this context, predict whether the current revision is likely our fault 
     });
 
   } catch (error) {
-    console.error("Error in analyze-revision:", error);
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return createErrorResponse(error, 'Analyze Revision', corsHeaders);
   }
 });
