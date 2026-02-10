@@ -26,6 +26,7 @@ app = Flask(__name__)
 # Configuration
 GCS_BUCKET = os.environ.get('GCS_BUCKET', 'tcv-video-uploads')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_SERVICE_ROLE_KEY = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip()
 # Strip whitespace/newlines from secret to prevent header errors
 GCP_CALLBACK_SECRET = (os.environ.get('GCP_CALLBACK_SECRET') or '').strip()
 PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT')
