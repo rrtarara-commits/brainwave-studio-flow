@@ -109,6 +109,6 @@ scripts/selfhost/sync-gcp-secrets.sh <GCP_PROJECT_ID>
   - `GCP_CALLBACK_SECRET`
   - `SUPABASE_SERVICE_ROLE_KEY`
 - If secrets changed, update them first in Secret Manager.
-- `LOVABLE_API_KEY` is optional for baseline QC pipeline, but required for:
-  - AI Brain
-  - AI filename/metadata checks in `video-qc`
+- AI features (`ai-brain`, `analyze-revision`, `video-qc` filename checks) use Vertex AI via:
+  - `GCP_SERVICE_ACCOUNT_JSON`
+  - optional `VERTEX_PROJECT_ID`, `VERTEX_LOCATION`, `VERTEX_MODEL`

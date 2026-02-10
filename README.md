@@ -93,10 +93,13 @@ Depending on enabled features:
   - `FRAMEIO_CLIENT_ID`
   - `FRAMEIO_CLIENT_SECRET`
 - AI/QC:
-  - `LOVABLE_API_KEY`
+  - `GCP_SERVICE_ACCOUNT_JSON`
+  - optional overrides:
+    - `VERTEX_PROJECT_ID`
+    - `VERTEX_LOCATION`
+    - `VERTEX_MODEL`
 - GCP integration:
   - `GCS_BUCKET`
-  - `GCP_SERVICE_ACCOUNT_JSON`
   - `GCP_CALLBACK_SECRET`
 - Optional cron:
   - `CRON_SECRET`

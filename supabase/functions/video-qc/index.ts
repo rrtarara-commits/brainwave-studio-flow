@@ -1,6 +1,7 @@
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 import { createErrorResponse } from '../_shared/error-utils.ts';
+import { generateWithVertex, getVertexModel, parseJsonFromModel } from '../_shared/vertex-ai.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -330,12 +331,6 @@ async function analyzeWithAI(
   standards: any[],
   frameioFeedback: string[] = []
 ): Promise<QCFlag[]> {
-  const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-  if (!LOVABLE_API_KEY) {
-    console.error('LOVABLE_API_KEY not configured');
-    return [];
-  }
-
   const flags: QCFlag[] = [];
   
   const customStandards = standards.filter(s => s.rule_type === 'custom');
@@ -406,49 +401,17 @@ Only return the JSON, no other text.`;
       required: ['flags', 'summary'],
     };
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
-        messages: [
-          { role: 'system', content: 'You are a video QC specialist. Respond only with valid JSON.' },
-          { role: 'user', content: prompt },
-        ],
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'video_qc_filename_analysis',
-            schema: outputSchema,
-            strict: true,
-          },
-        },
-        max_tokens: 1500,
-        temperature: 0.3,
-      }),
+    const content = await generateWithVertex({
+      systemPrompt: 'You are a video QC specialist. Respond only with valid JSON.',
+      messages: [{ role: 'user', content: prompt }],
+      responseMimeType: 'application/json',
+      responseSchema: outputSchema,
+      maxOutputTokens: 1500,
+      temperature: 0.3,
     });
-
-    if (!response.ok) {
-      console.error('AI Gateway error:', response.status);
-      return [];
-    }
-
-    const aiResponse = await response.json();
-    const content = aiResponse.choices?.[0]?.message?.content || '';
     
     try {
-      let parsed: { flags?: Array<{ severity?: 'error' | 'warning' | 'info'; category?: string; title?: string; description?: string }> } | null = null;
-      try {
-        parsed = JSON.parse(content);
-      } catch {
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-        }
-      }
+      const parsed = parseJsonFromModel<{ flags?: Array<{ severity?: 'error' | 'warning' | 'info'; category?: string; title?: string; description?: string }> }>(content);
 
       if (parsed?.flags && Array.isArray(parsed.flags)) {
         for (const flag of parsed.flags) {
@@ -572,7 +535,7 @@ Deno.serve(async (req) => {
       thoughtTrace: {
         standardsChecked: standards.length,
         feedbackItemsReviewed: frameioFeedback?.length || 0,
-        aiModel: 'google/gemini-3-flash-preview',
+        aiModel: `vertex-ai/${getVertexModel()}`,
         visualFramesAnalyzed: 0,
         audioAnalyzed: false,
         note: 'Full visual/audio analysis requires video processing service integration',

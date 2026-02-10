@@ -1,5 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 import { createErrorResponse } from '../_shared/error-utils.ts';
+import { generateWithVertex, getVertexModel } from '../_shared/vertex-ai.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -209,11 +210,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
-    if (!LOVABLE_API_KEY) {
-      throw new Error('LOVABLE_API_KEY is not configured');
-    }
-
     const body: AIBrainRequest = await req.json();
     const { type, messages = [], context = {} } = body;
 
@@ -263,48 +259,20 @@ Deno.serve(async (req) => {
     // Build messages array for AI
     const systemPrompt = buildSystemPrompt(type);
     const aiMessages = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: contextMessage },
-      ...messages.map(m => ({ role: m.role, content: m.content })),
+      { role: 'user' as const, content: contextMessage },
+      ...messages
+        .filter((m) => typeof m?.content === 'string' && (m.role === 'user' || m.role === 'assistant'))
+        .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     ];
 
     console.log(`Sending ${aiMessages.length} messages to AI`);
 
-    // Call Lovable AI Gateway
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-3-flash-preview',
-        messages: aiMessages,
-        max_tokens: 2000,
-        temperature: 0.7,
-      }),
+    const content = await generateWithVertex({
+      systemPrompt,
+      messages: aiMessages,
+      maxOutputTokens: 2000,
+      temperature: 0.7,
     });
-
-    if (!response.ok) {
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: 'Rate limit exceeded. Please try again later.' }),
-          { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      if (response.status === 402) {
-        return new Response(
-          JSON.stringify({ error: 'AI credits exhausted. Please add funds to continue.' }),
-          { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-      const errorText = await response.text();
-      console.error('AI Gateway error:', response.status, errorText);
-      throw new Error(`AI Gateway error: ${response.status}`);
-    }
-
-    const aiResponse = await response.json();
-    const content = aiResponse.choices?.[0]?.message?.content || 'No response generated.';
 
     console.log('AI Brain response generated successfully');
 
@@ -315,7 +283,7 @@ Deno.serve(async (req) => {
         thoughtTrace: {
           type,
           contextSize: contextMessage.length,
-          model: 'google/gemini-3-flash-preview',
+          model: `vertex-ai/${getVertexModel()}`,
           timestamp: new Date().toISOString(),
         },
       }),

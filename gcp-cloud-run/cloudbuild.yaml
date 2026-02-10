@@ -50,6 +50,9 @@ steps:
       - '--min-instances'
       - '0'
       - '--cpu-boost'
+      # This service does long-running background work after returning 202.
+      # Cloud Run's default CPU throttling would make that work extremely slow.
+      - '--no-cpu-throttling'
       - '--service-account'
       - 'tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com'
       - '--set-env-vars'

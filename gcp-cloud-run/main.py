@@ -33,6 +33,28 @@ SUPABASE_SERVICE_ROLE_KEY = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').
 GCP_CALLBACK_SECRET = (os.environ.get('GCP_CALLBACK_SECRET') or '').strip()
 PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT')
 
+# FFmpeg tuning. This service commonly runs multiple FFmpeg processes in parallel,
+# so we want to avoid oversubscribing CPU threads.
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == '':
+        val = default
+    else:
+        try:
+            val = int(str(raw).strip())
+        except ValueError:
+            val = default
+    if val < minimum:
+        val = minimum
+    if maximum is not None and val > maximum:
+        val = maximum
+    return val
+
+
+FFMPEG_THREADS = _env_int("FFMPEG_THREADS", 2, minimum=1, maximum=8)
+MAX_CONCURRENT_JOBS = _env_int("MAX_CONCURRENT_JOBS", 1, minimum=1, maximum=8)
+job_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
+
 # Audio analysis thresholds
 DIALOGUE_TARGET_DB = -3.0
 DIALOGUE_TOLERANCE_DB = 3.0
@@ -58,6 +80,58 @@ known_exceptions_lock = threading.Lock()
 
 # Initialize Vertex AI
 vertexai.init(project=PROJECT_ID, location="us-central1")
+
+
+def acquire_deep_analysis_lock(
+    upload_id: str,
+    bucket_name: str,
+    blob_name: str,
+    job_id: str,
+    generation: str | None,
+) -> bool:
+    """
+    Best-effort distributed idempotency guard.
+
+    GCS/Eventarc delivery is at-least-once; the same object can trigger multiple
+    events. We try to insert a single-row lock keyed by upload_id. If it already
+    exists, we skip to avoid duplicate processing and wasted compute.
+    """
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        # Can't lock without Supabase config; proceed.
+        return True
+
+    url = f"{SUPABASE_URL}/rest/v1/deep_analysis_locks"
+    headers = {
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+    }
+    payload = {
+        'upload_id': upload_id,
+        'gcs_bucket': bucket_name,
+        'gcs_object': blob_name,
+        'gcs_generation': str(generation) if generation is not None else None,
+        'job_id': job_id,
+    }
+
+    try:
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code in {200, 201, 204}:
+            print(f"[Lock] Acquired: upload_id={upload_id}")
+            return True
+        if resp.status_code == 409:
+            print(f"[Lock] Duplicate event detected; skipping: upload_id={upload_id}")
+            return False
+        if resp.status_code == 400 and 'duplicate' in (resp.text or '').lower():
+            print(f"[Lock] Duplicate event detected; skipping: upload_id={upload_id}")
+            return False
+        # If table doesn't exist yet or another error happens, don't block processing.
+        print(f"[Lock] Unexpected response ({resp.status_code}): {resp.text[:200]}")
+        return True
+    except Exception as e:
+        print(f"[Lock] Error acquiring lock (proceeding anyway): {e}")
+        return True
 
 
 def download_video(bucket_name: str, blob_name: str, temp_dir: str) -> str:
@@ -92,14 +166,18 @@ def get_video_duration(video_path: str) -> float:
 def detect_scene_changes(video_path: str, threshold: float = 0.3) -> list[float]:
     """Detect scene change timestamps using FFmpeg."""
     cmd = [
-        'ffmpeg', '-i', video_path,
+        'ffmpeg',
+        '-hide_banner',
+        '-nostats',
+        '-threads', str(FFMPEG_THREADS),
+        '-i', video_path,
         '-vf', f'select=\'gt(scene,{threshold})\',showinfo',
         '-f', 'null', '-'
     ]
     
     scene_timestamps = []
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         stderr = result.stderr
         
         # Parse timestamps from showinfo output
@@ -126,7 +204,11 @@ def detect_flash_frames(video_path: str) -> list[dict]:
     
     # Use the showinfo filter to detect sudden luminance changes
     cmd = [
-        'ffmpeg', '-i', video_path,
+        'ffmpeg',
+        '-hide_banner',
+        '-nostats',
+        '-threads', str(FFMPEG_THREADS),
+        '-i', video_path,
         '-vf', 'select=\'gt(scene,0.8)\',showinfo',
         '-f', 'null', '-'
     ]
@@ -173,7 +255,11 @@ def detect_freeze_frames(video_path: str) -> list[dict]:
     issues = []
     
     cmd = [
-        'ffmpeg', '-i', video_path,
+        'ffmpeg',
+        '-hide_banner',
+        '-nostats',
+        '-threads', str(FFMPEG_THREADS),
+        '-i', video_path,
         '-vf', 'freezedetect=n=0.003:d=0.5',
         '-f', 'null', '-'
     ]
@@ -276,7 +362,13 @@ def extract_frames_smart(
         print(f"Quick mode: sampling at {[f'{t:.1f}s' for t in timestamps]}")
     else:
         # Thorough mode: combine uniform sampling with scene-change sampling
-        scene_changes = detect_scene_changes(video_path, SCENE_CHANGE_THRESHOLD)
+        scene_changes: list[float] = []
+        # Scene-change detection can be expensive on long videos and isn't needed
+        # to extract only a handful of representative frames.
+        if duration <= 600:
+            scene_changes = detect_scene_changes(video_path, SCENE_CHANGE_THRESHOLD)
+        else:
+            print("Skipping scene detection (video too long)")
         
         # Distribute uniform samples across ENTIRE video (beginning, middle, end)
         num_uniform = THOROUGH_MODE_FRAMES // 2
@@ -326,7 +418,11 @@ def extract_frames_smart(
         frame_path = os.path.join(temp_dir, f"frame_{i:03d}.jpg")
         
         extract_cmd = [
-            'ffmpeg', '-y', '-ss', str(timestamp),
+            'ffmpeg',
+            '-hide_banner',
+            '-nostats',
+            '-threads', '1',
+            '-y', '-ss', str(timestamp),
             '-i', video_path,
             '-vframes', '1',
             '-q:v', '2',
@@ -354,7 +450,12 @@ def analyze_audio(video_path: str) -> dict:
     
     # Run a single pass with both volumedetect and silencedetect.
     cmd = [
-        'ffmpeg', '-i', video_path,
+        'ffmpeg',
+        '-hide_banner',
+        '-nostats',
+        '-threads', str(FFMPEG_THREADS),
+        '-i', video_path,
+        '-vn',
         '-af', 'volumedetect,silencedetect=noise=-50dB:d=0.5',
         '-f', 'null', '-'
     ]
@@ -449,7 +550,11 @@ def detect_black_frames(video_path: str) -> list[dict]:
     issues = []
     
     cmd = [
-        'ffmpeg', '-i', video_path,
+        'ffmpeg',
+        '-hide_banner',
+        '-nostats',
+        '-threads', str(FFMPEG_THREADS),
+        '-i', video_path,
         '-vf', 'blackdetect=d=0.1:pix_th=0.10',  # Reduced duration to catch brief black frames
         '-an', '-f', 'null', '-'
     ]
@@ -486,6 +591,112 @@ def detect_black_frames(video_path: str) -> list[dict]:
         })
     
     return issues
+
+
+def detect_video_issues(video_path: str) -> list[dict]:
+    """
+    Single-pass video-only FFmpeg scan that combines:
+    - blackdetect
+    - freezedetect
+    - flash-like abrupt-change detection via scene threshold
+
+    This replaces multiple full-video FFmpeg passes, which can be very slow.
+    """
+    issues: list[dict] = []
+
+    # Filter graph:
+    # - Branch 1: blackdetect + freezedetect over full video
+    # - Branch 2: scene-based frame selection (historically used as "flash" heuristic)
+    filter_complex = (
+        "[0:v]split=2[vmain][vflash];"
+        "[vmain]blackdetect=d=0.1:pix_th=0.10,freezedetect=n=0.003:d=0.5[vmainout];"
+        "[vflash]select='gt(scene,0.8)',showinfo[vflashout]"
+    )
+
+    cmd = [
+        'ffmpeg',
+        '-hide_banner',
+        '-nostats',
+        '-threads', str(FFMPEG_THREADS),
+        '-i', video_path,
+        '-filter_complex', filter_complex,
+        '-map', '[vmainout]', '-f', 'null', '/dev/null',
+        '-map', '[vflashout]', '-f', 'null', '/dev/null',
+    ]
+
+    black_segments: list[float] = []
+    freeze_segments: list[float] = []
+    flash_timestamps: list[float] = []
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        stderr = result.stderr or ""
+
+        for line in stderr.split('\n'):
+            if 'black_start' in line:
+                try:
+                    start = float(line.split('black_start:')[1].split()[0])
+                    black_segments.append(start)
+                except (IndexError, ValueError):
+                    pass
+                continue
+
+            if 'freeze_start' in line:
+                try:
+                    start_match = re.search(r'freeze_start:\s*(\d+\.?\d*)', line)
+                    if start_match:
+                        freeze_segments.append(float(start_match.group(1)))
+                except ValueError:
+                    pass
+                continue
+
+            if 'pts_time:' in line:
+                # showinfo output from the flash branch
+                try:
+                    pts_match = re.search(r'pts_time:(\d+\.?\d*)', line)
+                    if pts_match:
+                        flash_timestamps.append(float(pts_match.group(1)))
+                except ValueError:
+                    pass
+
+        if len(black_segments) > 3:
+            issues.append({
+                'type': 'warning',
+                'category': 'Black Frames',
+                'title': f'{len(black_segments)} black frame sequences detected',
+                'description': f'Found black segments at: {", ".join([f"{t:.1f}s" for t in black_segments[:5]])}{"..." if len(black_segments) > 5 else ""}',
+                'timestamp': black_segments[0] if black_segments else None
+            })
+
+        if len(freeze_segments) > 2:
+            issues.append({
+                'type': 'warning',
+                'category': 'Freeze Frames',
+                'title': f'{len(freeze_segments)} freeze frame sequences detected',
+                'description': f'Found frozen video at: {", ".join([f"{t:.1f}s" for t in freeze_segments[:5]])}{"..." if len(freeze_segments) > 5 else ""}. Verify these are intentional.',
+                'timestamp': freeze_segments[0] if freeze_segments else None
+            })
+
+        if flash_timestamps:
+            issues.append({
+                'type': 'warning',
+                'category': 'Flash Frames',
+                'title': f'{len(flash_timestamps)} potential flash frames detected',
+                'description': f'Found sudden changes at: {", ".join([f"{t:.1f}s" for t in flash_timestamps[:10]])}{"..." if len(flash_timestamps) > 10 else ""}. Review for unintended flashes.',
+                'timestamp': flash_timestamps[0] if flash_timestamps else None
+            })
+
+        print(f"Video scan results: black={len(black_segments)}, freeze={len(freeze_segments)}, flash={len(flash_timestamps)}")
+        return issues
+
+    except subprocess.TimeoutExpired:
+        return [{
+            'type': 'warning',
+            'category': 'Analysis',
+            'title': 'Video scan timeout',
+            'description': 'Combined video scan took too long.',
+            'timestamp': None
+        }]
 
 
 def load_known_exceptions() -> list[dict]:
@@ -893,7 +1104,13 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
     with jobs_lock:
         processing_jobs[job_id] = {'status': 'processing', 'upload_id': upload_id}
     
+    acquired_slot = False
     try:
+        report_progress(upload_id, 5, f"Waiting for worker slot (max {MAX_CONCURRENT_JOBS}/instance)...")
+        job_semaphore.acquire()
+        acquired_slot = True
+        report_progress(upload_id, 5, "Worker started")
+
         # Create temp directory for processing
         with tempfile.TemporaryDirectory() as temp_dir:
             # Download video
@@ -926,8 +1143,18 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                         'quick',
                         known_exceptions,
                     )
-                    audio_analysis = audio_future.result()
-                    visual_analysis = visual_future.result()
+                    audio_analysis = None
+                    visual_analysis = None
+                    for fut in concurrent.futures.as_completed([audio_future, visual_future]):
+                        if fut == audio_future:
+                            audio_analysis = fut.result()
+                            report_progress(upload_id, 55, "Audio checks complete...")
+                        else:
+                            visual_analysis = fut.result()
+                            report_progress(upload_id, 75, "AI visual review complete...")
+
+                    audio_analysis = audio_analysis or {'issues': [], 'summary': 'Audio analysis unavailable'}
+                    visual_analysis = visual_analysis or {'issues': [], 'summary': 'Visual analysis unavailable'}
                 
             else:
                 # Thorough mode: comprehensive analysis with Creative Director persona
@@ -940,11 +1167,9 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                 )
                 report_progress(upload_id, 30, "Running comprehensive technical checks...")
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     audio_future = executor.submit(analyze_audio, video_path)
-                    black_future = executor.submit(detect_black_frames, video_path)
-                    flash_future = executor.submit(detect_flash_frames, video_path)
-                    freeze_future = executor.submit(detect_freeze_frames, video_path)
+                    video_issues_future = executor.submit(detect_video_issues, video_path)
                     visual_future = executor.submit(
                         analyze_with_gemini,
                         frames,
@@ -953,15 +1178,27 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                         known_exceptions,
                     )
 
-                    audio_analysis = audio_future.result()
-                    black_frame_issues = black_future.result()
-                    flash_frame_issues = flash_future.result()
-                    freeze_frame_issues = freeze_future.result()
-                    visual_analysis = visual_future.result()
+                    audio_analysis = None
+                    video_issues = None
+                    visual_analysis = None
+                    futures = [audio_future, video_issues_future, visual_future]
+                    for fut in concurrent.futures.as_completed(futures):
+                        if fut == audio_future:
+                            audio_analysis = fut.result()
+                            report_progress(upload_id, 50, "Audio checks complete...")
+                        elif fut == video_issues_future:
+                            video_issues = fut.result()
+                            report_progress(upload_id, 65, "Video integrity scan complete...")
+                        else:
+                            visual_analysis = fut.result()
+                            report_progress(upload_id, 80, "AI visual review complete...")
+
+                    audio_analysis = audio_analysis or {'issues': [], 'summary': 'Audio analysis unavailable'}
+                    video_issues = video_issues or []
+                    visual_analysis = visual_analysis or {'issues': [], 'summary': 'Visual analysis unavailable'}
                 
                 # Merge all FFmpeg-detected issues into visual analysis
-                all_ffmpeg_issues = black_frame_issues + flash_frame_issues + freeze_frame_issues
-                visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
+                visual_analysis['issues'] = (visual_analysis.get('issues', []) or []) + (video_issues or [])
 
             report_progress(upload_id, 88, "Finalizing findings...")
             
@@ -1010,6 +1247,13 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                 'upload_id': upload_id,
                 'error': str(e)[:200]
             }
+    finally:
+        if acquired_slot:
+            try:
+                job_semaphore.release()
+            except ValueError:
+                # Shouldn't happen, but don't crash on double-release.
+                pass
 
 
 @app.route('/', methods=['POST'])
@@ -1076,6 +1320,11 @@ def handle_gcs_event():
     
     # Generate job ID and start background processing
     job_id = str(uuid.uuid4())
+
+    # Best-effort dedupe: if we've already started work for this upload, skip.
+    generation = event_data.get('generation') if isinstance(event_data, dict) else None
+    if not acquire_deep_analysis_lock(upload_id, bucket_name, blob_name, job_id, generation):
+        return jsonify({'skipped': True, 'reason': 'duplicate event', 'uploadId': upload_id}), 200
     
     thread = threading.Thread(
         target=process_video_async,

@@ -86,7 +86,12 @@ Minimum for core QC:
 - `GCP_SERVICE_ACCOUNT_JSON`
 - `GCP_CALLBACK_SECRET`
 
-`LOVABLE_API_KEY` is optional for baseline QC flow, but required for AI Brain and AI filename checks.
+AI features run on Vertex AI using `GCP_SERVICE_ACCOUNT_JSON`.
+Optional overrides:
+
+- `VERTEX_PROJECT_ID`
+- `VERTEX_LOCATION`
+- `VERTEX_MODEL`
 
 ## 5) Point Cloud Run Worker to Self-Hosted Supabase
 

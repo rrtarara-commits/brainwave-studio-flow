@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 import { createErrorResponse } from '../_shared/error-utils.ts';
+import { generateWithVertex, parseJsonFromModel } from '../_shared/vertex-ai.ts';
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -17,6 +18,13 @@ interface AnalysisRequest {
     internal: number;
   };
   currentStatus: string;
+}
+
+interface RevisionPrediction {
+  recommendation: 'our_fault' | 'client_scope';
+  confidence: number;
+  reasoning: string;
+  dataPoints: string[];
 }
 
 serve(async (req) => {
@@ -71,11 +79,6 @@ serve(async (req) => {
       );
     }
 
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY is not configured");
-    }
-
     const body: AnalysisRequest = await req.json();
     const { projectTitle, clientName, recentFeedback, revisionHistory, currentStatus } = body;
 
@@ -106,84 +109,40 @@ Recent Feedback: ${recentFeedback?.length ? recentFeedback.join('; ') : 'None av
 
 Based on this context, predict whether the current revision is likely our fault or a client scope change.`;
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
+    const predictionSchema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        recommendation: {
+          type: 'string',
+          enum: ['our_fault', 'client_scope'],
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+        },
+        reasoning: {
+          type: 'string',
+        },
+        dataPoints: {
+          type: 'array',
+          items: { type: 'string' },
+        },
       },
-      body: JSON.stringify({
-        model: "google/gemini-3-flash-preview",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        tools: [
-          {
-            type: "function",
-            function: {
-              name: "revision_prediction",
-              description: "Predict whether a revision is due to internal mistake or client scope change",
-              parameters: {
-                type: "object",
-                properties: {
-                  recommendation: {
-                    type: "string",
-                    enum: ["our_fault", "client_scope"],
-                    description: "The prediction result"
-                  },
-                  confidence: {
-                    type: "number",
-                    minimum: 0,
-                    maximum: 1,
-                    description: "Confidence score between 0 and 1"
-                  },
-                  reasoning: {
-                    type: "string",
-                    description: "Brief explanation of the reasoning"
-                  },
-                  dataPoints: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Data points that influenced the decision"
-                  }
-                },
-                required: ["recommendation", "confidence", "reasoning", "dataPoints"],
-                additionalProperties: false
-              }
-            }
-          }
-        ],
-        tool_choice: { type: "function", function: { name: "revision_prediction" } }
-      }),
+      required: ['recommendation', 'confidence', 'reasoning', 'dataPoints'],
+    };
+
+    const rawPrediction = await generateWithVertex({
+      systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      responseMimeType: 'application/json',
+      responseSchema: predictionSchema,
+      maxOutputTokens: 600,
+      temperature: 0.1,
     });
 
-    if (!response.ok) {
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Rate limit exceeded. Please try again later." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      if (response.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "AI credits exhausted. Please add more credits." }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      const errorText = await response.text();
-      console.error("AI gateway error:", response.status, errorText);
-      throw new Error(`AI gateway error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
-    
-    if (!toolCall) {
-      throw new Error("No tool call in response");
-    }
-
-    const prediction = JSON.parse(toolCall.function.arguments);
+    const prediction = parseJsonFromModel<RevisionPrediction>(rawPrediction);
 
     return new Response(JSON.stringify(prediction), {
       status: 200,

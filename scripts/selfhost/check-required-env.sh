@@ -37,7 +37,7 @@ ensure_not_placeholder() {
     return 1
   fi
 
-  if [[ "$value" == *"replace-with"* || "$value" == *"your-supabase-domain.example.com"* || "$value" == *"your-video-analysis-bucket"* ]]; then
+  if [[ "$value" == *"replace-with"* || "$value" == *"your-supabase-domain.example.com"* || "$value" == *"your-video-analysis-bucket"* || "$value" == *"\"project_id\":\"...\""* ]]; then
     echo "Placeholder value for ${key} in ${file}"
     return 1
   fi
@@ -77,20 +77,18 @@ run_check check_var "$functions_env" "SUPABASE_URL"
 run_check check_var "$functions_env" "SUPABASE_ANON_KEY"
 run_check check_var "$functions_env" "SUPABASE_SERVICE_ROLE_KEY"
 run_check check_var "$functions_env" "GCS_BUCKET"
+run_check check_var "$functions_env" "GCP_SERVICE_ACCOUNT_JSON"
 run_check check_var "$functions_env" "GCP_CALLBACK_SECRET"
 run_check ensure_not_placeholder "$functions_env" "SUPABASE_URL"
 run_check ensure_not_placeholder "$functions_env" "SUPABASE_ANON_KEY"
 run_check ensure_not_placeholder "$functions_env" "SUPABASE_SERVICE_ROLE_KEY"
 run_check ensure_not_placeholder "$functions_env" "GCS_BUCKET"
+run_check ensure_not_placeholder "$functions_env" "GCP_SERVICE_ACCOUNT_JSON"
 run_check ensure_not_placeholder "$functions_env" "GCP_CALLBACK_SECRET"
 
 if [[ "$errors" -gt 0 ]]; then
   echo "Self-host environment check failed with ${errors} issue(s)."
   exit 1
-fi
-
-if ! check_var "$functions_env" "LOVABLE_API_KEY" || ! ensure_not_placeholder "$functions_env" "LOVABLE_API_KEY"; then
-  echo "Warning: LOVABLE_API_KEY is not configured. AI Brain and AI filename checks will not work."
 fi
 
 echo "Self-host environment check passed."

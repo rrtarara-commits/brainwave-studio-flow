@@ -159,6 +159,9 @@ echo "Add this to Supabase secrets as GCP_CALLBACK_SECRET"
 
 ## Phase 5: Deploy Cloud Run Service
 
+**Important:** This service intentionally does most work *after* it returns `202 Accepted` (background thread).
+Cloud Run's default CPU throttling would make that background work extremely slow. Use `--no-cpu-throttling`.
+
 ### 5.1 Build and Deploy
 
 From the project root directory:
@@ -190,6 +193,7 @@ gcloud run deploy tcv-video-analyzer \
   --memory 2Gi \
   --cpu 2 \
   --timeout 900 \
+  --no-cpu-throttling \
   --concurrency 1 \
   --max-instances 10 \
   --set-env-vars "GCS_BUCKET=your-video-analysis-bucket,SUPABASE_URL=https://your-supabase-domain.example.com" \
