@@ -13,7 +13,11 @@
     "test:watch": "vitest",
     "selfhost:bootstrap-env": "bash ./scripts/selfhost/bootstrap-env.sh",
     "selfhost:check-env": "bash ./scripts/selfhost/check-required-env.sh",
-    "selfhost:migrate-db": "bash ./scripts/selfhost/migrate-db.sh"
+    "selfhost:migrate-db": "bash ./scripts/selfhost/migrate-db.sh",
+    "selfhost:install-stack": "bash ./scripts/selfhost/install-supabase-docker.sh",
+    "selfhost:print-values": "bash ./scripts/selfhost/print-selfhost-values.sh",
+    "selfhost:apply-values": "bash ./scripts/selfhost/apply-selfhost-values.sh",
+    "selfhost:sync-gcp-secrets": "bash ./scripts/selfhost/sync-gcp-secrets.sh"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

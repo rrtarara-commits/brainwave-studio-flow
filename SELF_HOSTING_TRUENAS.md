@@ -16,7 +16,23 @@ This guide is for the `self-hosted-rebuild` branch.
 
 ## 1) Bring up Self-Hosted Supabase
 
-Use the official Supabase self-hosted Docker stack on your TrueNAS Docker host. Keep these outputs handy:
+Use the official Supabase self-hosted Docker stack on your TrueNAS Docker host.
+
+From this repo:
+
+```bash
+npm run selfhost:install-stack -- "$HOME/supabase-selfhost"
+```
+
+Then start it:
+
+```bash
+cd "$HOME/supabase-selfhost"
+docker compose pull
+docker compose up -d
+```
+
+Keep these outputs handy:
 
 - `SUPABASE_URL` (gateway URL)
 - `ANON_KEY`
@@ -52,6 +68,8 @@ Optional:
 Validate config before deploy:
 
 ```bash
+npm run selfhost:print-values -- "$HOME/supabase-selfhost/.env"
+npm run selfhost:apply-values -- "$HOME/supabase-selfhost/.env"
 npm run selfhost:check-env
 ```
 
@@ -64,10 +82,11 @@ Minimum for core QC:
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `LOVABLE_API_KEY`
 - `GCS_BUCKET`
 - `GCP_SERVICE_ACCOUNT_JSON`
 - `GCP_CALLBACK_SECRET`
+
+`LOVABLE_API_KEY` is optional for baseline QC flow, but required for AI Brain and AI filename checks.
 
 ## 5) Point Cloud Run Worker to Self-Hosted Supabase
 
@@ -81,6 +100,7 @@ Update analyzer service env vars:
 Then redeploy Cloud Run:
 
 ```bash
+scripts/selfhost/sync-gcp-secrets.sh <GCP_PROJECT_ID>
 scripts/selfhost/redeploy-analyzer.sh <GCP_PROJECT_ID> <SUPABASE_URL> <GCS_BUCKET>
 ```
 

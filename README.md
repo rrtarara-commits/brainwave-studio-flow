@@ -60,6 +60,15 @@ Recommended for your use case:
 
 This gives you the best tradeoff: no managed Supabase subscription while preserving current app behavior.
 
+Fast-path scripts:
+
+```bash
+npm run selfhost:install-stack -- "$HOME/supabase-selfhost"
+npm run selfhost:print-values -- "$HOME/supabase-selfhost/.env"
+npm run selfhost:apply-values -- "$HOME/supabase-selfhost/.env"
+npm run selfhost:check-env
+```
+
 ## Backend Function Routing
 
 Frontend function calls now use a shared adapter:
