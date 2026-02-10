@@ -49,7 +49,7 @@ steps:
       - '10'
       - '--min-instances'
       - '0'
-      - '--startup-cpu-boost'
+      - '--cpu-boost'
       - '--service-account'
       - 'tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com'
       - '--set-env-vars'
