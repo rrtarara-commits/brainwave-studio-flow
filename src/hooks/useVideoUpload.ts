@@ -46,6 +46,11 @@ export interface DeepAnalysisResult {
   };
 }
 
+export interface DeepAnalysisProgress {
+  percent: number;
+  stage: string;
+}
+
 export interface VideoUpload {
   id: string;
   projectId: string;
@@ -58,6 +63,7 @@ export interface VideoUpload {
   dismissedFlags: string[];
   frameioLink?: string;
   deepAnalysisStatus?: 'pending' | 'processing' | 'complete' | 'failed';
+  deepAnalysisProgress?: DeepAnalysisProgress;
   visualAnalysis?: DeepAnalysisResult['visual'];
   audioAnalysis?: DeepAnalysisResult['audio'];
   analysisMode?: AnalysisMode;
