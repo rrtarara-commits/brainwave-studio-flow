@@ -126,19 +126,44 @@ export function useVideoUpload() {
               }));
             }
 
-            const updatedResult = prev.qcResult ? {
-              ...prev.qcResult,
-              flags: [...prev.qcResult.flags, ...deepFlags],
-              passed: data.qc_passed ?? prev.qcResult.passed,
-              thoughtTrace: {
-                ...prev.qcResult.thoughtTrace,
-                visualFramesAnalyzed: visualAnalysis?.framesAnalyzed || 0,
-                audioAnalyzed: !!audioAnalysis,
-              },
-            } : prev.qcResult;
+            // Use DB qcResult as source of truth if available, fallback to local merge
+            const dbQcResult = data.qc_result as Record<string, unknown> | null;
+            let updatedResult: QCResult | undefined;
+
+            if (dbQcResult && dbQcResult.flags) {
+              // DB has the fully merged result from the callback — use it directly
+              updatedResult = {
+                passed: (dbQcResult.passed as boolean) ?? prev.qcResult?.passed ?? true,
+                flags: (dbQcResult.flags as QCFlag[]) ?? [],
+                metadata: (dbQcResult.metadata as Record<string, unknown>) ?? prev.qcResult?.metadata ?? {},
+                analyzedAt: (dbQcResult.analyzedAt as string) ?? prev.qcResult?.analyzedAt ?? '',
+                thoughtTrace: {
+                  standardsChecked: ((dbQcResult.thoughtTrace as Record<string, unknown>)?.standardsChecked as number) ?? prev.qcResult?.thoughtTrace?.standardsChecked ?? 0,
+                  feedbackItemsReviewed: ((dbQcResult.thoughtTrace as Record<string, unknown>)?.feedbackItemsReviewed as number) ?? prev.qcResult?.thoughtTrace?.feedbackItemsReviewed ?? 0,
+                  aiModel: ((dbQcResult.thoughtTrace as Record<string, unknown>)?.aiModel as string) ?? prev.qcResult?.thoughtTrace?.aiModel ?? '',
+                  visualFramesAnalyzed: visualAnalysis?.framesAnalyzed || 0,
+                  audioAnalyzed: !!audioAnalysis,
+                },
+              };
+            } else if (prev.qcResult) {
+              updatedResult = {
+                ...prev.qcResult,
+                flags: [...prev.qcResult.flags, ...deepFlags],
+                passed: data.qc_passed ?? prev.qcResult.passed,
+                thoughtTrace: {
+                  ...prev.qcResult.thoughtTrace,
+                  visualFramesAnalyzed: visualAnalysis?.framesAnalyzed || 0,
+                  audioAnalyzed: !!audioAnalysis,
+                },
+              };
+            }
+
+            // Reconcile primary status — if DB says 'reviewed', use it
+            const reconciledStatus = (data.status === 'reviewed' ? 'reviewed' : prev.status) as VideoUpload['status'];
 
             return {
               ...prev,
+              status: reconciledStatus,
               deepAnalysisStatus: 'complete' as const,
               visualAnalysis: visualAnalysis as VideoUpload['visualAnalysis'],
               audioAnalysis: audioAnalysis as VideoUpload['audioAnalysis'],
