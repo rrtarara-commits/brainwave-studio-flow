@@ -21,6 +21,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search, MessageSquare } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
+import { Progress } from '@/components/ui/progress';
 import { QCFlagsList } from './QCFlagsList';
 import { FilenameStandardizer } from './FilenameStandardizer';
 import { useVideoUpload, AnalysisMode } from '@/hooks/useVideoUpload';
