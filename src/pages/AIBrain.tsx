@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -12,6 +11,7 @@ import { useAIConversations } from '@/hooks/useAIConversations';
 import { ConversationSidebar } from '@/components/ai-brain/ConversationSidebar';
 import { ChatMessages } from '@/components/ai-brain/ChatMessages';
 import { QuickActions, type AIRequestType } from '@/components/ai-brain/QuickActions';
+import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
 
 export default function AIBrain() {
   const { profile } = useAuth();
@@ -58,7 +58,7 @@ export default function AIBrain() {
     setIsLoading(true);
 
     try {
-      const { data, error } = await supabase.functions.invoke('ai-brain', {
+      const { data, error } = await invokeBackendFunction('ai-brain', {
         body: {
           type,
           messages: [...messages, userMessage].map(m => ({

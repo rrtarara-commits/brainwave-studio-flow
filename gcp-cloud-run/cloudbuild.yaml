@@ -69,5 +69,5 @@ options:
 
 # Substitution variables (set these in Cloud Build trigger)
 substitutions:
-  _GCS_BUCKET: 'tcvstudioanalyze'
-  _SUPABASE_URL: 'https://hdytpmbgrhaxyjvvpewy.supabase.co'
+  _GCS_BUCKET: 'video-analysis'
+  _SUPABASE_URL: 'https://replace-with-your-self-hosted-supabase.example.com'

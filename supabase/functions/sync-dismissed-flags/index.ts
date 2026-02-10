@@ -37,7 +37,7 @@ interface FeedbackConfig {
 }
 
 // GCS configuration
-const GCS_BUCKET = 'tcvstudioanalyze';
+const GCS_BUCKET = Deno.env.get('GCS_BUCKET') || 'video-analysis';
 const FEEDBACK_FILE = 'config/feedback.json';
 
 // Get OAuth2 access token from service account JSON

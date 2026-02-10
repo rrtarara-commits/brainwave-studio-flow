@@ -1,9 +1,9 @@
-import { supabase } from '@/integrations/supabase/client';
+import { invokeBackendFunction } from './invoke-backend-function';
 
 export const notionSyncApi = {
   async triggerSync() {
     try {
-      const { data, error } = await supabase.functions.invoke('notion-sync');
+      const { data, error } = await invokeBackendFunction('notion-sync');
 
       if (error) {
         throw error;

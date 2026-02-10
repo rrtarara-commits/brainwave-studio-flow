@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
 import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
 
 export default function FrameIOCallback() {
   const [searchParams] = useSearchParams();
@@ -76,7 +76,7 @@ export default function FrameIOCallback() {
     // Exchange code for tokens
     const exchangeCode = async () => {
       try {
-        const { data, error: fnError } = await supabase.functions.invoke('frameio', {
+        const { data, error: fnError } = await invokeBackendFunction('frameio', {
           body: { 
             action: 'exchange_code', 
             code,

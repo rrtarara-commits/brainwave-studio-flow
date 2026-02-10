@@ -8,7 +8,7 @@ const corsHeaders = {
 };
 
 // GCS configuration
-const GCS_BUCKET = Deno.env.get('GCS_BUCKET') || 'tcvstudioanalyze';
+const GCS_BUCKET = Deno.env.get('GCS_BUCKET') || 'video-analysis';
 const GCS_API_URL = 'https://storage.googleapis.com/upload/storage/v1/b';
 
 interface QCRequest {

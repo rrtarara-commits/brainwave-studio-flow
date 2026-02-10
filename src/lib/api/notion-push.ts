@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { invokeBackendFunction } from './invoke-backend-function';
 
 export interface ProjectUpdate {
   status?: string;
@@ -29,7 +29,7 @@ export const notionPushApi = {
     }
 
     try {
-      const { data: result, error } = await supabase.functions.invoke('notion-push', {
+      const { data: result, error } = await invokeBackendFunction('notion-push', {
         body: {
           type: 'project',
           notion_id: notionId,
@@ -58,7 +58,7 @@ export const notionPushApi = {
    */
   async pushWorkLog(data: WorkLogData) {
     try {
-      const { data: result, error } = await supabase.functions.invoke('notion-push', {
+      const { data: result, error } = await invokeBackendFunction('notion-push', {
         body: {
           type: 'work_log',
           data: {

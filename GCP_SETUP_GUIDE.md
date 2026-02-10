@@ -86,9 +86,9 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 ```bash
 # Create bucket (replace with your unique name)
-gsutil mb -l us-central1 gs://tcvstudioanalyze
+gsutil mb -l us-central1 gs://your-video-analysis-bucket
 
-# Note: We recommend using 'tcvstudioanalyze' as the bucket name for the analyzer
+# Note: We recommend using 'your-video-analysis-bucket' as the bucket name for the analyzer
 ```
 
 ### 3.2 Set Lifecycle Rule (Auto-cleanup after 24 hours)
@@ -110,11 +110,11 @@ cat > /tmp/lifecycle.json << 'EOF'
 }
 EOF
 
-gsutil lifecycle set /tmp/lifecycle.json gs://tcvstudioanalyze
+gsutil lifecycle set /tmp/lifecycle.json gs://your-video-analysis-bucket
 ```
 
 **Via Google Cloud Console (alternative):**
-1. Go to **Cloud Storage** → **Buckets** → `tcvstudioanalyze`
+1. Go to **Cloud Storage** → **Buckets** → `your-video-analysis-bucket`
 2. Click **Lifecycle** tab
 3. Click **Add a rule**
 4. Configure:
@@ -128,12 +128,12 @@ gsutil lifecycle set /tmp/lifecycle.json gs://tcvstudioanalyze
 ```bash
 gsutil iam ch \
   serviceAccount:tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com:objectViewer \
-  gs://tcvstudioanalyze
+  gs://your-video-analysis-bucket
 
 # Also grant write access for the config/feedback.json (Memory Layer)
 gsutil iam ch \
   serviceAccount:tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com:objectCreator \
-  gs://tcvstudioanalyze
+  gs://your-video-analysis-bucket
 ```
 
 ---
@@ -168,7 +168,7 @@ cd gcp-cloud-run
 
 # Build and push container
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions="_GCS_BUCKET=tcvstudioanalyze,_SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co"
+  --substitutions="_GCS_BUCKET=your-video-analysis-bucket,_SUPABASE_URL=https://your-supabase-domain.example.com"
 ```
 
 ### 5.2 Manual Deploy (Alternative)
@@ -192,7 +192,7 @@ gcloud run deploy tcv-video-analyzer \
   --timeout 900 \
   --concurrency 1 \
   --max-instances 10 \
-  --set-env-vars "GCS_BUCKET=tcvstudioanalyze,SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co" \
+  --set-env-vars "GCS_BUCKET=your-video-analysis-bucket,SUPABASE_URL=https://your-supabase-domain.example.com" \
   --set-secrets "GCP_CALLBACK_SECRET=GCP_CALLBACK_SECRET:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest" \
   --service-account "tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com" \
   --allow-unauthenticated
@@ -228,7 +228,7 @@ gcloud eventarc triggers create tcv-video-trigger \
   --destination-run-service tcv-video-analyzer \
   --destination-run-region us-central1 \
   --event-filters "type=google.cloud.storage.object.v1.finalized" \
-  --event-filters "bucket=tcvstudioanalyze" \
+  --event-filters "bucket=your-video-analysis-bucket" \
   --service-account "tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com"
 ```
 
@@ -250,7 +250,7 @@ cat > /tmp/cors.json << 'EOF'
 ]
 EOF
 
-gsutil cors set /tmp/cors.json gs://tcvstudioanalyze
+gsutil cors set /tmp/cors.json gs://your-video-analysis-bucket
 ```
 
 ---
@@ -309,7 +309,7 @@ curl $SERVICE_URL/health
 
 1. Upload a test video to GCS:
 ```bash
-gsutil cp test-video.mp4 gs://tcvstudioanalyze/uploads/test-123/test-video.mp4
+gsutil cp test-video.mp4 gs://your-video-analysis-bucket/uploads/test-123/test-video.mp4
 ```
 
 2. Check Cloud Run logs:
@@ -389,7 +389,7 @@ The system includes a "Memory Layer" that learns from dismissed QC flags to redu
 ### How It Works
 
 1. When editors dismiss QC flags in the UI, those dismissals are stored in `video_uploads.dismissed_flags`
-2. The `sync-dismissed-flags` edge function aggregates these patterns and uploads to `gs://tcvstudioanalyze/config/feedback.json`
+2. The `sync-dismissed-flags` edge function aggregates these patterns and uploads to `gs://your-video-analysis-bucket/config/feedback.json`
 3. The Cloud Run worker reads this file and includes "Known Exceptions" in Gemini prompts
 4. AI analysis then avoids flagging issues that have been repeatedly dismissed
 
@@ -397,7 +397,7 @@ The system includes a "Memory Layer" that learns from dismissed QC flags to redu
 
 **Manual sync (admin only):**
 ```bash
-curl -X POST https://hdytpmbgrhaxyjvvpewy.supabase.co/functions/v1/sync-dismissed-flags \
+curl -X POST https://your-supabase-domain.example.com/functions/v1/sync-dismissed-flags \
   -H "Authorization: Bearer YOUR_ADMIN_JWT_TOKEN"
 ```
 
@@ -407,7 +407,7 @@ Set up a cron job to call the function daily:
 # Example: Using Google Cloud Scheduler
 gcloud scheduler jobs create http sync-dismissed-flags \
   --schedule="0 2 * * *" \
-  --uri="https://hdytpmbgrhaxyjvvpewy.supabase.co/functions/v1/sync-dismissed-flags" \
+  --uri="https://your-supabase-domain.example.com/functions/v1/sync-dismissed-flags" \
   --http-method=POST \
   --headers="x-cron-secret=YOUR_CRON_SECRET" \
   --location=us-central1

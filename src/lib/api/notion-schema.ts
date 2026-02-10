@@ -1,4 +1,4 @@
-import { supabase } from '@/integrations/supabase/client';
+import { invokeBackendFunction } from './invoke-backend-function';
 
 export interface NotionProperty {
   id: string;
@@ -17,7 +17,7 @@ export const notionSchemaApi = {
     error?: string;
   }> {
     try {
-      const { data, error } = await supabase.functions.invoke('notion-schema', {
+      const { data, error } = await invokeBackendFunction('notion-schema', {
         body: {
           action: 'get_schema',
           database_id: databaseId,
@@ -54,7 +54,7 @@ export const notionSchemaApi = {
     error?: string;
   }> {
     try {
-      const { data, error } = await supabase.functions.invoke('notion-schema', {
+      const { data, error } = await invokeBackendFunction('notion-schema', {
         body: {
           action: 'create_property',
           database_id: databaseId,

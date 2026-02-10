@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 import { useFrameIOAuth } from './useFrameIOAuth';
+import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
 
 export interface FrameIOProject {
   id: string;
@@ -28,7 +28,7 @@ export function useFrameIO() {
     setError(null);
 
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('frameio', {
+      const { data, error: fnError } = await invokeBackendFunction('frameio', {
         body: { action: 'get_projects' },
       });
 
@@ -50,7 +50,7 @@ export function useFrameIO() {
 
   const fetchFeedback = async (assetId: string): Promise<string[]> => {
     try {
-      const { data, error } = await supabase.functions.invoke('frameio', {
+      const { data, error } = await invokeBackendFunction('frameio', {
         body: { action: 'get_feedback', assetId },
       });
 
@@ -68,7 +68,7 @@ export function useFrameIO() {
 
   const fetchAssets = async (frameioProjectId: string) => {
     try {
-      const { data, error } = await supabase.functions.invoke('frameio', {
+      const { data, error } = await invokeBackendFunction('frameio', {
         body: { action: 'get_assets', frameioProjectId },
       });
 

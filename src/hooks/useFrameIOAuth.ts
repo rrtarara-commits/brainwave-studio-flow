@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
 
 export function useFrameIOAuth() {
   const { user } = useAuth();
@@ -69,7 +70,7 @@ export function useFrameIOAuth() {
     setIsConnecting(true);
     
     try {
-      const { data, error } = await supabase.functions.invoke('frameio', {
+      const { data, error } = await invokeBackendFunction('frameio', {
         body: { 
           action: 'get_auth_url',
           redirectUri: `${window.location.origin}/integrations/frameio/callback`,
@@ -133,7 +134,7 @@ export function useFrameIOAuth() {
   // Disconnect Frame.io
   const disconnect = useCallback(async () => {
     try {
-      const { data, error } = await supabase.functions.invoke('frameio', {
+      const { data, error } = await invokeBackendFunction('frameio', {
         body: { action: 'disconnect' },
       });
 

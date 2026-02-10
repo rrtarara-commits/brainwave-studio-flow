@@ -1,73 +1,113 @@
-# Welcome to your Lovable project
+# Brainwave Studio Flow
 
-## Project info
+This branch (`self-hosted-rebuild`) is configured for **self-hosting**.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+The app remains functionally the same, but infra assumptions are now branch-safe:
+- no hardcoded hosted Supabase project URLs
+- no tracked runtime `.env` file
+- optional custom function backend URL (`VITE_FUNCTIONS_BASE_URL`)
 
-## How can I edit this code?
+## What This App Does
 
-There are several ways of editing your application.
+- Authenticated production workspace for video projects
+- QC upload pipeline with:
+  - initial QC analysis
+  - deep analysis progress polling
+  - pass/fail + flagged issues
+- Optional handoff to Frame.io with timestamped QC comments
+- Notion sync/push utilities for project metadata workflows
 
-**Use Lovable**
+## Architecture (Current)
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
+- Frontend: Vite + React + TypeScript
+- Data/Auth/Storage: Supabase APIs (self-hostable)
+- Server logic: Edge Functions in `supabase/functions/*`
+- Deep media analysis worker: `gcp-cloud-run/main.py`
 
-Changes made via Lovable will be committed automatically to this repo.
+## Quick Start (Local)
 
-**Use your preferred IDE**
+1. Install dependencies:
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+```bash
+npm install
+```
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+2. Create local env:
 
-Follow these steps:
+```bash
+cp .env.example .env
+```
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+3. Fill `.env` values:
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+- optional: `VITE_FUNCTIONS_BASE_URL`
 
-# Step 3: Install the necessary dependencies.
-npm i
+4. Run frontend:
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+```bash
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Self-Hosting Strategy
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+Recommended for your use case:
 
-**Use GitHub Codespaces**
+1. Self-host Supabase OSS (Auth, Postgres, Storage, API) on your TrueNAS host.
+2. Deploy this app against that self-hosted URL and anon key.
+3. Keep heavy video analysis on GCP Cloud Run (or migrate that worker later).
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+This gives you the best tradeoff: no managed Supabase subscription while preserving current app behavior.
 
-## What technologies are used for this project?
+## Backend Function Routing
 
-This project is built with:
+Frontend function calls now use a shared adapter:
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+- File: `src/lib/api/invoke-backend-function.ts`
+- Default mode: calls `supabase.functions.invoke(...)`
+- Optional override: if `VITE_FUNCTIONS_BASE_URL` is set, calls your custom function base URL directly
 
-## How can I deploy this project?
+This lets you move function execution off Supabase incrementally without rewriting UI flows.
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+## Required Secrets / Env (Functions)
 
-## Can I connect a custom domain to my Lovable project?
+Depending on enabled features:
 
-Yes, you can!
+- Supabase core:
+  - `SUPABASE_URL`
+  - `SUPABASE_ANON_KEY`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+- Notion:
+  - `NOTION_API_KEY`
+- Frame.io:
+  - `FRAMEIO_CLIENT_ID`
+  - `FRAMEIO_CLIENT_SECRET`
+- AI/QC:
+  - `LOVABLE_API_KEY`
+- GCP integration:
+  - `GCS_BUCKET`
+  - `GCP_SERVICE_ACCOUNT_JSON`
+  - `GCP_CALLBACK_SECRET`
+- Optional cron:
+  - `CRON_SECRET`
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+## Database
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+Schema and policies are in `supabase/migrations/*`.
+
+For a clean self-hosted environment, apply all migrations in order.
+
+## Quality Gates
+
+Before pushing/deploying this branch:
+
+```bash
+npm run lint
+npm run test
+npm run build
+```
+
+## Related Docs
+
+- `GCP_SETUP_GUIDE.md`: Cloud Run worker + Eventarc + callback flow

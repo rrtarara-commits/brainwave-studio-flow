@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
+import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
 
 export type AnalysisMode = 'quick' | 'thorough';
 
@@ -339,7 +340,7 @@ export function useVideoUpload() {
     setUpload(prev => prev ? { ...prev, status: 'analyzing' } : null);
 
     try {
-      const { data, error } = await supabase.functions.invoke('video-qc', {
+      const { data, error } = await invokeBackendFunction('video-qc', {
         body: {
           uploadId: uploadData.id,
           projectId: uploadData.projectId,
@@ -503,7 +504,7 @@ export function useVideoUpload() {
           }));
       }
 
-      const { data, error } = await supabase.functions.invoke('frameio', {
+      const { data, error } = await invokeBackendFunction('frameio', {
         body: {
           action: 'upload',
           projectId: upload.projectId,

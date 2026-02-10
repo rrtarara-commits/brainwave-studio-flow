@@ -42,6 +42,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
 
 interface AIPrediction {
   recommendation: 'our_fault' | 'client_scope';
@@ -126,7 +127,7 @@ export default function Projects() {
 
       // Fetch AI prediction
       try {
-        const { data, error } = await supabase.functions.invoke('analyze-revision', {
+        const { data, error } = await invokeBackendFunction('analyze-revision', {
           body: {
             projectId: project.id,
             projectTitle: project.title,

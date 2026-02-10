@@ -1,4 +1,4 @@
-project_id = "hdytpmbgrhaxyjvvpewy"
+project_id = "brainwave-selfhost"
 
 [functions.notion-sync]
 verify_jwt = false
