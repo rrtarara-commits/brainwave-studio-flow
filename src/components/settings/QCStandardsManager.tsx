@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -55,11 +55,7 @@ export function QCStandardsManager() {
   const [formSeverity, setFormSeverity] = useState<'error' | 'warning' | 'info'>('warning');
   const [formRuleConfig, setFormRuleConfig] = useState('{}');
 
-  useEffect(() => {
-    fetchStandards();
-  }, []);
-
-  const fetchStandards = async () => {
+  const fetchStandards = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('qc_standards')
@@ -79,7 +75,11 @@ export function QCStandardsManager() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [toast]);
+
+  useEffect(() => {
+    fetchStandards();
+  }, [fetchStandards]);
 
   const resetForm = () => {
     setFormName('');

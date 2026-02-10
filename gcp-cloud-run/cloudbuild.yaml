@@ -55,7 +55,7 @@ steps:
       - '--set-env-vars'
       - 'GCS_BUCKET=${_GCS_BUCKET},SUPABASE_URL=${_SUPABASE_URL}'
       - '--set-secrets'
-      - 'GCP_CALLBACK_SECRET=GCP_CALLBACK_SECRET:latest'
+      - 'GCP_CALLBACK_SECRET=GCP_CALLBACK_SECRET:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest'
       - '--allow-unauthenticated'
 
 # Store images in Container Registry

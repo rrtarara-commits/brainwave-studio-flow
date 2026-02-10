@@ -298,7 +298,10 @@ export default function Projects() {
           <div className="flex items-center gap-3">
             <SyncStatusIndicator compact onSyncComplete={fetchProjects} />
             {(isAdmin || isProducer) && (
-              <Button className="bg-primary hover:bg-primary/90">
+              <Button
+                className="bg-primary hover:bg-primary/90"
+                onClick={() => navigate('/projects/new')}
+              >
                 <Plus className="h-4 w-4 mr-2" />
                 New Project
               </Button>
@@ -389,7 +392,11 @@ export default function Projects() {
             <CardContent className="py-12 text-center">
               <p className="text-muted-foreground">No projects found</p>
               {(isAdmin || isProducer) && (
-                <Button variant="link" className="mt-2">
+                <Button
+                  variant="link"
+                  className="mt-2"
+                  onClick={() => navigate('/projects/new')}
+                >
                   Create your first project
                 </Button>
               )}

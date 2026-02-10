@@ -637,7 +637,7 @@ def report_progress(upload_id: str, percent: int, stage: str):
         'Prefer': 'return=minimal',
     }
     payload = {
-        'deep_analysis_progress': json.dumps({'percent': percent, 'stage': stage})
+        'deep_analysis_progress': {'percent': percent, 'stage': stage}
     }
     
     try:

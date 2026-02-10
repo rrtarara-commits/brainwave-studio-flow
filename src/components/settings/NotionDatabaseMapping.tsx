@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { notionSchemaApi, NotionProperty } from '@/lib/api/notion-schema';
 import { notionSyncApi } from '@/lib/api/notion-sync';
@@ -124,11 +124,7 @@ export function NotionDatabaseMapping() {
   const [isCreating, setIsCreating] = useState(false);
   const [newPropertyName, setNewPropertyName] = useState('');
 
-  useEffect(() => {
-    fetchConfigs();
-  }, []);
-
-  const fetchConfigs = async () => {
+  const fetchConfigs = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('app_config')
@@ -170,7 +166,11 @@ export function NotionDatabaseMapping() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [toast]);
+
+  useEffect(() => {
+    fetchConfigs();
+  }, [fetchConfigs]);
 
   const handleDatabaseIdChange = async (key: string, value: string) => {
     setConfigs((prev) =>

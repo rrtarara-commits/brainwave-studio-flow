@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Loader2, CheckCircle2, XCircle } from 'lucide-react';
@@ -14,7 +14,7 @@ export default function FrameIOCallback() {
   // Check if we're in a popup
   const isPopup = window.opener !== null;
 
-  const closeOrRedirect = (path: string) => {
+  const closeOrRedirect = useCallback((path: string) => {
     if (isPopup) {
       // Notify opener and close popup
       try {
@@ -27,7 +27,7 @@ export default function FrameIOCallback() {
       // Normal redirect for non-popup flow
       navigate(path);
     }
-  };
+  }, [isPopup, navigate]);
 
   useEffect(() => {
     const code = searchParams.get('code');
@@ -125,7 +125,7 @@ export default function FrameIOCallback() {
     };
 
     exchangeCode();
-  }, [searchParams, navigate, toast, isPopup]);
+  }, [searchParams, toast, isPopup, closeOrRedirect]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">

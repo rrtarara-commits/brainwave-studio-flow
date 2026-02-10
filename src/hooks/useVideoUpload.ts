@@ -237,82 +237,6 @@ export function useVideoUpload() {
     };
   }, []);
 
-  // Upload file to storage and create record
-  const uploadVideo = useCallback(async (
-    file: File,
-    projectId: string,
-    clientName?: string,
-    frameioFeedback?: string[],
-    analysisMode: AnalysisMode = 'thorough'
-  ) => {
-    if (!user) {
-      toast({ variant: 'destructive', title: 'Error', description: 'You must be logged in' });
-      return null;
-    }
-
-    setIsUploading(true);
-
-    try {
-      // Create upload record first
-      const { data: uploadRecord, error: recordError } = await supabase
-        .from('video_uploads')
-        .insert({
-          project_id: projectId,
-          uploader_id: user.id,
-          file_name: file.name,
-          file_size: file.size,
-          status: 'pending',
-          frameio_feedback: frameioFeedback ? { items: frameioFeedback } : null,
-        })
-        .select()
-        .single();
-
-      if (recordError) throw recordError;
-
-      // Upload to storage
-      const storagePath = `${user.id}/${uploadRecord.id}/${file.name}`;
-      const { error: storageError } = await supabase.storage
-        .from('video-uploads')
-        .upload(storagePath, file);
-
-      if (storageError) throw storageError;
-
-      // Update record with storage path
-      await supabase
-        .from('video_uploads')
-        .update({ storage_path: storagePath })
-        .eq('id', uploadRecord.id);
-
-      const newUpload: VideoUpload = {
-        id: uploadRecord.id,
-        projectId,
-        fileName: file.name,
-        fileSize: file.size,
-        storagePath,
-        status: 'pending',
-        dismissedFlags: [],
-        analysisMode,
-      };
-
-      setUpload(newUpload);
-      setIsUploading(false);
-
-      // Start QC analysis
-      await analyzeVideo(newUpload, storagePath, clientName, frameioFeedback, analysisMode);
-
-      return newUpload;
-    } catch (error) {
-      console.error('Upload error:', error);
-      toast({
-        variant: 'destructive',
-        title: 'Upload Failed',
-        description: error instanceof Error ? error.message : 'Failed to upload video',
-      });
-      setIsUploading(false);
-      return null;
-    }
-  }, [user, toast]);
-
   // Run QC analysis
   const analyzeVideo = useCallback(async (
     uploadData: VideoUpload,
@@ -365,6 +289,83 @@ export function useVideoUpload() {
       setIsAnalyzing(false);
     }
   }, [toast, pollDeepAnalysis]);
+
+  // Upload file to storage and create record
+  const uploadVideo = useCallback(async (
+    file: File,
+    projectId: string,
+    clientName?: string,
+    frameioFeedback?: string[],
+    analysisMode: AnalysisMode = 'thorough'
+  ) => {
+    if (!user) {
+      toast({ variant: 'destructive', title: 'Error', description: 'You must be logged in' });
+      return null;
+    }
+
+    setIsUploading(true);
+
+    try {
+      // Create upload record first
+      const { data: uploadRecord, error: recordError } = await supabase
+        .from('video_uploads')
+        .insert({
+          project_id: projectId,
+          uploader_id: user.id,
+          file_name: file.name,
+          file_size: file.size,
+          status: 'pending',
+          frameio_feedback: frameioFeedback ? { items: frameioFeedback } : null,
+        })
+        .select()
+        .single();
+
+      if (recordError) throw recordError;
+
+      // Upload to storage
+      const storagePath = `${user.id}/${uploadRecord.id}/${file.name}`;
+      const { error: storageError } = await supabase.storage
+        .from('video-uploads')
+        .upload(storagePath, file);
+
+      if (storageError) throw storageError;
+
+      // Update record with storage path
+      const { error: pathUpdateError } = await supabase
+        .from('video_uploads')
+        .update({ storage_path: storagePath })
+        .eq('id', uploadRecord.id);
+      if (pathUpdateError) throw pathUpdateError;
+
+      const newUpload: VideoUpload = {
+        id: uploadRecord.id,
+        projectId,
+        fileName: file.name,
+        fileSize: file.size,
+        storagePath,
+        status: 'pending',
+        dismissedFlags: [],
+        analysisMode,
+      };
+
+      setUpload(newUpload);
+      setIsUploading(false);
+
+      // Start QC analysis
+      await analyzeVideo(newUpload, storagePath, clientName, frameioFeedback, analysisMode);
+
+      return newUpload;
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Upload Failed',
+        description: error instanceof Error ? error.message : 'Failed to upload video',
+      });
+      setIsUploading(false);
+      return null;
+    }
+  }, [user, toast, analyzeVideo]);
 
   // Dismiss a flag
   const dismissFlag = useCallback((flagId: string) => {

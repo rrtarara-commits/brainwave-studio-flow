@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { Project, WorkLog, Expense, TASK_TYPES, TaskType } from '@/lib/types';
@@ -44,11 +44,7 @@ export default function TimeLogger() {
 
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       // Fetch projects
       const { data: projectsData } = await supabase
@@ -79,7 +75,11 @@ export default function TimeLogger() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const handleTimeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
