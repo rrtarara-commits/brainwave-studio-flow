@@ -207,7 +207,7 @@ export function useVideoUpload() {
           });
 
         } else if (data?.deep_analysis_status === 'processing') {
-          const progress = data.deep_analysis_progress as DeepAnalysisProgress | null;
+          const progress = data.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
           setUpload(prev => prev ? { 
             ...prev, 
             deepAnalysisStatus: 'processing',
