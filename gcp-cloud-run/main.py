@@ -712,8 +712,10 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
         # Create temp directory for processing
         with tempfile.TemporaryDirectory() as temp_dir:
             # Download video
+            report_progress(upload_id, 5, "Downloading video...")
             print(f"[Job {job_id}] Downloading video...")
             video_path = download_video(bucket_name, blob_name, temp_dir)
+            report_progress(upload_id, 15, "Extracting frames...")
             
             # Load known exceptions from Memory Layer
             known_exceptions = load_known_exceptions()
@@ -723,19 +725,26 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                 # Quick mode: minimal analysis with QC Editor persona
                 print(f"[Job {job_id}] Running quick analysis...")
                 frames = extract_frames_smart(video_path, temp_dir, mode='quick')
+                report_progress(upload_id, 35, "Analyzing audio...")
                 audio_analysis = analyze_audio(video_path)
+                report_progress(upload_id, 60, "Running AI visual analysis...")
                 visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick', known_exceptions=known_exceptions)
                 
             else:
                 # Thorough mode: comprehensive analysis with Creative Director persona
                 print(f"[Job {job_id}] Running thorough analysis...")
                 frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
+                report_progress(upload_id, 30, "Analyzing audio...")
                 
                 # Run all detection
                 audio_analysis = analyze_audio(video_path)
+                report_progress(upload_id, 50, "Detecting black frames...")
                 black_frame_issues = detect_black_frames(video_path)
+                report_progress(upload_id, 60, "Detecting flash frames...")
                 flash_frame_issues = detect_flash_frames(video_path)
+                report_progress(upload_id, 70, "Detecting freeze frames...")
                 freeze_frame_issues = detect_freeze_frames(video_path)
+                report_progress(upload_id, 80, "Running AI visual analysis...")
                 visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough', known_exceptions=known_exceptions)
                 
                 # Merge all FFmpeg-detected issues into visual analysis
@@ -743,6 +752,7 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                 visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
             
             # Submit results
+            report_progress(upload_id, 95, "Submitting results...")
             print(f"[Job {job_id}] Submitting results...")
             submit_results(upload_id, visual_analysis, audio_analysis, success=True)
             

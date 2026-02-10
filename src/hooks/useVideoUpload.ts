@@ -207,7 +207,18 @@ export function useVideoUpload() {
           });
 
         } else if (data?.deep_analysis_status === 'processing') {
-          setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'processing' } : null);
+          const progress = data.deep_analysis_progress as DeepAnalysisProgress | null;
+          setUpload(prev => prev ? { 
+            ...prev, 
+            deepAnalysisStatus: 'processing',
+            deepAnalysisProgress: progress || prev.deepAnalysisProgress,
+          } : null);
+        } else {
+          // Even in pending/other states, update progress if available
+          const progress = data?.deep_analysis_progress as DeepAnalysisProgress | null;
+          if (progress && progress.percent > 0) {
+            setUpload(prev => prev ? { ...prev, deepAnalysisProgress: progress } : null);
+          }
         }
 
       } catch (err) {

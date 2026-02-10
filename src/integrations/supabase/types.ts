@@ -455,6 +455,7 @@ export type Database = {
           audio_analysis: Json | null
           completed_at: string | null
           created_at: string
+          deep_analysis_progress: Json | null
           deep_analysis_status: string | null
           dismissed_flags: string[] | null
           file_name: string
@@ -481,6 +482,7 @@ export type Database = {
           audio_analysis?: Json | null
           completed_at?: string | null
           created_at?: string
+          deep_analysis_progress?: Json | null
           deep_analysis_status?: string | null
           dismissed_flags?: string[] | null
           file_name: string
@@ -507,6 +509,7 @@ export type Database = {
           audio_analysis?: Json | null
           completed_at?: string | null
           created_at?: string
+          deep_analysis_progress?: Json | null
           deep_analysis_status?: string | null
           dismissed_flags?: string[] | null
           file_name?: string
