@@ -36,6 +36,53 @@ interface CallbackRequest {
   audioAnalysis: AudioAnalysis;
 }
 
+interface QCFlagLike {
+  id?: string;
+  type?: string;
+  category?: string;
+  title?: string;
+  description?: string;
+  source?: string;
+  timestamp?: number | null;
+  [key: string]: unknown;
+}
+
+function normalizeFlagText(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizeTimestampBucket(timestamp: unknown): string {
+  if (typeof timestamp !== 'number' || Number.isNaN(timestamp)) {
+    return 'none';
+  }
+  // 0.5 second buckets are good enough to merge duplicates from repeat callbacks.
+  return String(Math.round(timestamp * 2) / 2);
+}
+
+function dedupeFlags(flags: QCFlagLike[]): QCFlagLike[] {
+  const seen = new Set<string>();
+  const deduped: QCFlagLike[] = [];
+
+  for (const flag of flags) {
+    const key = [
+      normalizeFlagText(flag.type),
+      normalizeFlagText(flag.category),
+      normalizeFlagText(flag.title),
+      normalizeFlagText(flag.description),
+      normalizeTimestampBucket(flag.timestamp),
+    ].join('|');
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    deduped.push(flag);
+  }
+
+  return deduped;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -94,10 +141,13 @@ Deno.serve(async (req) => {
 
     // Get existing QC result to merge with deep analysis
     const existingQcResult = upload.qc_result as Record<string, unknown> || {};
-    const existingFlags = (existingQcResult.flags as unknown[]) || [];
+    const existingFlagsRaw = Array.isArray(existingQcResult.flags) ? existingQcResult.flags : [];
+    const existingFlags: QCFlagLike[] = existingFlagsRaw.filter((flag): flag is QCFlagLike => (
+      typeof flag === 'object' && flag !== null
+    ));
 
     // Convert deep analysis issues to QC flags format
-    const deepAnalysisFlags: unknown[] = [];
+    const deepAnalysisFlags: QCFlagLike[] = [];
 
     // Add visual issues
     for (const issue of visualAnalysis.issues || []) {
@@ -125,11 +175,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Merge flags (existing + deep analysis)
-    const mergedFlags = [...existingFlags, ...deepAnalysisFlags];
+    // Merge flags (existing + deep analysis) and dedupe repeated findings
+    const mergedFlags = dedupeFlags([...existingFlags, ...deepAnalysisFlags]);
 
     // Check if any errors exist after deep analysis
-    const hasErrors = mergedFlags.some((f: unknown) => (f as { type: string }).type === 'error');
+    const hasErrors = mergedFlags.some((flag) => normalizeFlagText(flag.type) === 'error');
 
     // Update the thought trace
     const existingTrace = (existingQcResult.thoughtTrace as Record<string, unknown>) || {};
@@ -176,7 +226,11 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Upload ${uploadId} updated with GCP analysis: ${mergedFlags.length} total flags, passed: ${!hasErrors}`);
+    console.log(
+      `Upload ${uploadId} updated with GCP analysis: `
+      + `${existingFlags.length} existing + ${deepAnalysisFlags.length} deep -> `
+      + `${mergedFlags.length} deduped flags, passed: ${!hasErrors}`
+    );
 
     return new Response(
       JSON.stringify({ 

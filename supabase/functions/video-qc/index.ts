@@ -383,6 +383,29 @@ If the file appears to meet standards and feedback seems addressed, return empty
 Only return the JSON, no other text.`;
 
   try {
+    const outputSchema = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        flags: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              category: { type: 'string' },
+              title: { type: 'string' },
+              description: { type: 'string' },
+              severity: { type: 'string', enum: ['error', 'warning', 'info'] },
+            },
+            required: ['category', 'title', 'description', 'severity'],
+          },
+        },
+        summary: { type: 'string' },
+      },
+      required: ['flags', 'summary'],
+    };
+
     const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -395,6 +418,14 @@ Only return the JSON, no other text.`;
           { role: 'system', content: 'You are a video QC specialist. Respond only with valid JSON.' },
           { role: 'user', content: prompt },
         ],
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'video_qc_filename_analysis',
+            schema: outputSchema,
+            strict: true,
+          },
+        },
         max_tokens: 1500,
         temperature: 0.3,
       }),
@@ -409,20 +440,26 @@ Only return the JSON, no other text.`;
     const content = aiResponse.choices?.[0]?.message?.content || '';
     
     try {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.flags && Array.isArray(parsed.flags)) {
-          for (const flag of parsed.flags) {
-            flags.push({
-              id: `ai_${crypto.randomUUID().slice(0, 8)}`,
-              type: flag.severity || 'warning',
-              category: flag.category || 'AI Analysis',
-              title: flag.title,
-              description: flag.description,
-              source: 'ai_analysis',
-            });
-          }
+      let parsed: { flags?: Array<{ severity?: 'error' | 'warning' | 'info'; category?: string; title?: string; description?: string }> } | null = null;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
+        }
+      }
+
+      if (parsed?.flags && Array.isArray(parsed.flags)) {
+        for (const flag of parsed.flags) {
+          flags.push({
+            id: `ai_${crypto.randomUUID().slice(0, 8)}`,
+            type: flag.severity || 'warning',
+            category: flag.category || 'AI Analysis',
+            title: flag.title || 'AI rule concern',
+            description: flag.description || 'Potential issue identified by AI filename analysis',
+            source: 'ai_analysis',
+          });
         }
       }
     } catch (parseError) {

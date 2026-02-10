@@ -15,11 +15,13 @@ import tempfile
 import subprocess
 import threading
 import uuid
+import time
+import concurrent.futures
 import requests
 from flask import Flask, request, jsonify
 from google.cloud import storage
 import vertexai
-from vertexai.generative_models import GenerativeModel, Part
+from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 
 app = Flask(__name__)
 
@@ -40,11 +42,19 @@ PEAK_WARNING_THRESHOLD_DB = -1.0
 # Analysis mode settings - frames distributed across ENTIRE video
 QUICK_MODE_FRAMES = 8  # More frames for better coverage
 THOROUGH_MODE_FRAMES = 20  # Increased for full video analysis
+QUICK_MODE_MODEL_FRAMES = 5
+THOROUGH_MODE_MODEL_FRAMES = 8
 SCENE_CHANGE_THRESHOLD = 0.3  # Lower = more sensitive
 
 # Job tracking for background processing
 processing_jobs = {}
 jobs_lock = threading.Lock()
+
+# Cache known exceptions for a short TTL to avoid repeated GCS reads per job.
+known_exceptions_cache: list[dict] = []
+known_exceptions_cache_ts = 0.0
+KNOWN_EXCEPTIONS_TTL_SECONDS = 300
+known_exceptions_lock = threading.Lock()
 
 # Initialize Vertex AI
 vertexai.init(project=PROJECT_ID, location="us-central1")
@@ -205,9 +215,51 @@ def detect_freeze_frames(video_path: str) -> list[dict]:
     return issues
 
 
-def extract_frames_smart(video_path: str, temp_dir: str, mode: str = 'thorough') -> list[str]:
+def select_evenly_distributed_timestamps(timestamps: list[float], target_count: int) -> list[float]:
+    """Select evenly distributed timestamps from a sorted list."""
+    if target_count <= 0:
+        return []
+    if len(timestamps) <= target_count:
+        return timestamps
+    if target_count == 1:
+        return [timestamps[len(timestamps) // 2]]
+
+    selected: list[float] = []
+    for i in range(target_count):
+        idx = round(i * (len(timestamps) - 1) / (target_count - 1))
+        selected.append(timestamps[idx])
+
+    # Remove accidental duplicates caused by rounding and backfill from source list.
+    deduped: list[float] = []
+    seen: set[float] = set()
+    for ts in selected:
+        key = round(ts, 3)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ts)
+
+    if len(deduped) < target_count:
+        for ts in timestamps:
+            key = round(ts, 3)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(ts)
+            if len(deduped) >= target_count:
+                break
+
+    return sorted(deduped)
+
+
+def extract_frames_smart(
+    video_path: str,
+    temp_dir: str,
+    mode: str = 'thorough',
+    target_frames: int | None = None
+) -> list[dict]:
     """Extract frames distributed across the ENTIRE video duration."""
-    frame_paths = []
+    frame_samples = []
     duration = get_video_duration(video_path)
     
     print(f"Video duration: {duration:.1f}s, mode: {mode}")
@@ -261,7 +313,12 @@ def extract_frames_smart(video_path: str, temp_dir: str, mode: str = 'thorough')
         
         timestamps = timestamps[:THOROUGH_MODE_FRAMES]  # Cap at max frames
         print(f"Thorough mode: {len(uniform_timestamps)} uniform + {len(scene_timestamps)} scene-based samples")
-        print(f"Final timestamps: {[f'{t:.1f}s' for t in timestamps]}")
+
+    # Downsample candidates to the exact number we intend to analyze.
+    if target_frames is not None and target_frames > 0:
+        timestamps = select_evenly_distributed_timestamps(timestamps, target_frames)
+
+    print(f"Final timestamps: {[f'{t:.1f}s' for t in timestamps]}")
     
     print(f"Extracting {len(timestamps)} frames across {duration:.1f}s video")
     
@@ -279,23 +336,26 @@ def extract_frames_smart(video_path: str, temp_dir: str, mode: str = 'thorough')
         try:
             subprocess.run(extract_cmd, capture_output=True, timeout=30)
             if os.path.exists(frame_path):
-                frame_paths.append(frame_path)
+                frame_samples.append({
+                    'path': frame_path,
+                    'timestamp': float(timestamp),
+                })
         except subprocess.TimeoutExpired:
             print(f"Frame extraction timeout at {timestamp}s")
             continue
     
-    print(f"Extracted {len(frame_paths)} frames")
-    return frame_paths
+    print(f"Extracted {len(frame_samples)} frames")
+    return frame_samples
 
 
 def analyze_audio(video_path: str) -> dict:
     """Analyze audio levels using FFmpeg."""
     issues = []
     
-    # Run volumedetect filter
+    # Run a single pass with both volumedetect and silencedetect.
     cmd = [
         'ffmpeg', '-i', video_path,
-        '-af', 'volumedetect',
+        '-af', 'volumedetect,silencedetect=noise=-50dB:d=0.5',
         '-f', 'null', '-'
     ]
     
@@ -318,6 +378,7 @@ def analyze_audio(video_path: str) -> dict:
                     max_volume = float(line.split('max_volume:')[1].split('dB')[0].strip())
                 except (IndexError, ValueError):
                     pass
+        silence_count = stderr.count('silence_start')
         
         # Check dialogue levels
         if mean_volume is not None:
@@ -349,16 +410,6 @@ def analyze_audio(video_path: str) -> dict:
                     'description': f'Peak level at {max_volume:.1f}dB is close to {PEAK_ERROR_THRESHOLD_DB}dB limit.',
                     'timestamp': None
                 })
-        
-        # Check for audio dropouts (silence detection)
-        silence_cmd = [
-            'ffmpeg', '-i', video_path,
-            '-af', 'silencedetect=noise=-50dB:d=0.5',
-            '-f', 'null', '-'
-        ]
-        
-        silence_result = subprocess.run(silence_cmd, capture_output=True, text=True, timeout=300)
-        silence_count = silence_result.stderr.count('silence_start')
         
         if silence_count > 5:
             issues.append({
@@ -439,6 +490,12 @@ def detect_black_frames(video_path: str) -> list[dict]:
 
 def load_known_exceptions() -> list[dict]:
     """Load known exceptions from GCS feedback.json (the Memory Layer)."""
+    global known_exceptions_cache, known_exceptions_cache_ts
+
+    with known_exceptions_lock:
+        if known_exceptions_cache and (time.time() - known_exceptions_cache_ts) < KNOWN_EXCEPTIONS_TTL_SECONDS:
+            return known_exceptions_cache
+
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET)
@@ -452,11 +509,20 @@ def load_known_exceptions() -> list[dict]:
         feedback = json.loads(content)
         
         exceptions = feedback.get('known_exceptions', [])
+        if not isinstance(exceptions, list):
+            exceptions = []
+        with known_exceptions_lock:
+            known_exceptions_cache = exceptions
+            known_exceptions_cache_ts = time.time()
         print(f"Loaded {len(exceptions)} known exception patterns from Memory Layer")
         return exceptions
         
     except Exception as e:
         print(f"Could not load known exceptions: {e}")
+        with known_exceptions_lock:
+            # Fallback to cached data if available.
+            if known_exceptions_cache:
+                return known_exceptions_cache
         return []
 
 
@@ -496,7 +562,9 @@ Respond in JSON format:
       "category": "string",
       "type": "error|warning|info",
       "title": "string",
-      "description": "string"
+      "description": "string",
+      "frameRefs": [0],
+      "timestampSec": 12.5
     }}
   ],
   "summary": "PASS/FAIL with brief reason",
@@ -534,7 +602,9 @@ Respond in JSON format:
       "category": "string",
       "type": "error|warning|info",
       "title": "string",
-      "description": "detailed explanation with fix suggestion"
+      "description": "detailed explanation with fix suggestion",
+      "frameRefs": [0],
+      "timestampSec": 12.5
     }}
   ],
   "summary": "Detailed quality assessment (2-3 sentences)",
@@ -544,74 +614,143 @@ Respond in JSON format:
 If the video meets professional standards, return empty issues array with positive summary."""
 
 
-def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'thorough', known_exceptions: list[dict] = None) -> dict:
+def parse_json_response_text(response_text: str) -> dict:
+    """Parse model JSON response safely with markdown/regex fallbacks."""
+    text = (response_text or '').strip()
+    if not text:
+        return {}
+
+    if text.startswith('```'):
+        text = re.sub(r'^```[a-zA-Z]*\n?', '', text)
+        text = re.sub(r'```$', '', text).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r'\{[\s\S]*\}', text)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+def resolve_issue_timestamp(issue: dict, frame_samples: list[dict]) -> float | None:
+    """Resolve issue timestamp from explicit timestamp or frame references."""
+    raw_ts = issue.get('timestampSec')
+    if isinstance(raw_ts, (int, float)):
+        return round(float(raw_ts), 2)
+
+    refs = issue.get('frameRefs', issue.get('frameRef'))
+    if refs is None:
+        return None
+
+    if not isinstance(refs, list):
+        refs = [refs]
+
+    valid_indices: list[int] = []
+    for ref in refs:
+        try:
+            idx = int(ref)
+        except (ValueError, TypeError):
+            continue
+        if 0 <= idx < len(frame_samples):
+            valid_indices.append(idx)
+
+    if not valid_indices:
+        return None
+
+    # Average referenced frames for a stable anchor timestamp.
+    avg_ts = sum(float(frame_samples[idx].get('timestamp', 0.0)) for idx in valid_indices) / len(valid_indices)
+    return round(avg_ts, 2)
+
+
+def analyze_with_gemini(frame_samples: list[dict], file_name: str, mode: str = 'thorough', known_exceptions: list[dict] = None) -> dict:
     """Analyze frames using Vertex AI Gemini for creative/quality issues."""
-    if not frame_paths:
+    if not frame_samples:
         return {
             'issues': [],
             'summary': 'No frames available for visual analysis'
         }
-    
+
     issues = []
-    
+
     try:
         model = GenerativeModel("gemini-2.0-flash")
-        
-        # Limit frames based on mode
-        max_frames = 5 if mode == 'quick' else 8
-        frames_to_analyze = frame_paths[:max_frames]
-        
-        # Load frames as base64
+
+        max_frames = QUICK_MODE_MODEL_FRAMES if mode == 'quick' else THOROUGH_MODE_MODEL_FRAMES
+        frames_to_analyze = frame_samples
+        if len(frame_samples) > max_frames and max_frames > 0:
+            if max_frames == 1:
+                frames_to_analyze = [frame_samples[len(frame_samples) // 2]]
+            else:
+                step = (len(frame_samples) - 1) / (max_frames - 1)
+                indices = [round(i * step) for i in range(max_frames)]
+                indices = sorted(set(indices))
+                while len(indices) < max_frames:
+                    for idx in range(len(frame_samples)):
+                        if idx not in indices:
+                            indices.append(idx)
+                        if len(indices) >= max_frames:
+                            break
+                frames_to_analyze = [frame_samples[idx] for idx in sorted(indices)[:max_frames]]
+
         frame_parts = []
-        for path in frames_to_analyze:
-            with open(path, 'rb') as f:
+        for sample in frames_to_analyze:
+            with open(sample['path'], 'rb') as f:
                 frame_data = f.read()
                 frame_parts.append(Part.from_data(frame_data, mime_type="image/jpeg"))
-        
-        # Build role-based prompt with known exceptions
-        prompt = build_prompt_for_mode(mode, known_exceptions or [])
 
-        response = model.generate_content([prompt] + frame_parts)
-        response_text = response.text
-        
-        # Parse JSON from response
-        try:
-            json_match = response_text
-            if '```json' in response_text:
-                json_match = response_text.split('```json')[1].split('```')[0]
-            elif '```' in response_text:
-                json_match = response_text.split('```')[1].split('```')[0]
-            
-            parsed = json.loads(json_match.strip())
-            
-            for issue in parsed.get('issues', []):
+        frame_ref_lines = []
+        for idx, sample in enumerate(frames_to_analyze):
+            frame_ref_lines.append(f"- {idx}: {float(sample.get('timestamp', 0.0)):.2f}s")
+
+        prompt = (
+            build_prompt_for_mode(mode, known_exceptions or [])
+            + "\n\nFRAME REFERENCES:\n"
+            + "\n".join(frame_ref_lines)
+            + "\n\nFor each issue include at least one of: frameRefs (list of frame indices) or timestampSec (seconds)."
+        )
+
+        response = model.generate_content(
+            [prompt] + frame_parts,
+            generation_config=GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.2,
+            ),
+        )
+        parsed = parse_json_response_text(response.text or '')
+        parsed_issues = parsed.get('issues', [])
+
+        if isinstance(parsed_issues, list):
+            for issue in parsed_issues:
+                if not isinstance(issue, dict):
+                    continue
                 issues.append({
                     'type': issue.get('type', 'warning'),
                     'category': issue.get('category', 'Visual'),
                     'title': issue.get('title', 'Visual issue detected'),
                     'description': issue.get('description', ''),
-                    'timestamp': None
+                    'timestamp': resolve_issue_timestamp(issue, frames_to_analyze),
                 })
-            
-            return {
-                'framesAnalyzed': len(frame_paths),
-                'issues': issues,
-                'summary': parsed.get('summary', 'Visual analysis complete'),
-                'qualityScore': parsed.get('qualityScore', 7)
-            }
-            
-        except json.JSONDecodeError:
-            return {
-                'framesAnalyzed': len(frame_paths),
-                'issues': [],
-                'summary': response_text[:200] if response_text else 'Visual analysis complete',
-                'qualityScore': 7
-            }
-            
+
+        quality_score = parsed.get('qualityScore', 7)
+        if not isinstance(quality_score, (int, float)):
+            quality_score = 7
+        quality_score = max(1, min(10, int(round(float(quality_score)))))
+
+        return {
+            'framesAnalyzed': len(frames_to_analyze),
+            'issues': issues,
+            'summary': parsed.get('summary', 'Visual analysis complete') if isinstance(parsed, dict) else 'Visual analysis complete',
+            'qualityScore': quality_score,
+        }
+
     except Exception as e:
         print(f"Gemini analysis error: {e}")
         return {
-            'framesAnalyzed': len(frame_paths),
+            'framesAnalyzed': len(frame_samples),
             'issues': [{
                 'type': 'warning',
                 'category': 'Analysis',
@@ -669,15 +808,33 @@ def submit_results(upload_id: str, visual_analysis: dict, audio_analysis: dict, 
         'Content-Type': 'application/json',
         'x-gcp-secret': GCP_CALLBACK_SECRET
     }
-    
-    try:
-        response = requests.post(callback_url, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-        print(f"Results submitted for upload {upload_id}")
-        return True
-    except requests.RequestException as e:
-        print(f"Failed to submit results: {e}")
-        return False
+
+    max_attempts = 4
+    base_backoff_seconds = 1.0
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = requests.post(callback_url, json=payload, headers=headers, timeout=30)
+            response.raise_for_status()
+            print(f"Results submitted for upload {upload_id} on attempt {attempt}")
+            return True
+        except requests.RequestException as e:
+            status_code = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+            response_text = getattr(e.response, 'text', '')[:200] if hasattr(e, 'response') and e.response else ''
+            print(f"Submit attempt {attempt}/{max_attempts} failed (status={status_code}): {e} {response_text}")
+
+            # Non-transient failures should fail fast.
+            if status_code in {400, 401, 403, 404}:
+                return False
+
+            if attempt == max_attempts:
+                break
+
+            backoff_seconds = min(8.0, base_backoff_seconds * (2 ** (attempt - 1)))
+            time.sleep(backoff_seconds)
+
+    print(f"Failed to submit results after {max_attempts} attempts for upload {upload_id}")
+    return False
 
 
 def get_analysis_mode_from_metadata(bucket_name: str, blob_name: str) -> str:
@@ -724,32 +881,61 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
             if mode == 'quick':
                 # Quick mode: minimal analysis with QC Editor persona
                 print(f"[Job {job_id}] Running quick analysis...")
-                frames = extract_frames_smart(video_path, temp_dir, mode='quick')
-                report_progress(upload_id, 35, "Analyzing audio...")
-                audio_analysis = analyze_audio(video_path)
-                report_progress(upload_id, 60, "Running AI visual analysis...")
-                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick', known_exceptions=known_exceptions)
+                frames = extract_frames_smart(
+                    video_path,
+                    temp_dir,
+                    mode='quick',
+                    target_frames=QUICK_MODE_MODEL_FRAMES,
+                )
+                report_progress(upload_id, 35, "Running quick audio + visual checks...")
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    audio_future = executor.submit(analyze_audio, video_path)
+                    visual_future = executor.submit(
+                        analyze_with_gemini,
+                        frames,
+                        os.path.basename(blob_name),
+                        'quick',
+                        known_exceptions,
+                    )
+                    audio_analysis = audio_future.result()
+                    visual_analysis = visual_future.result()
                 
             else:
                 # Thorough mode: comprehensive analysis with Creative Director persona
                 print(f"[Job {job_id}] Running thorough analysis...")
-                frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
-                report_progress(upload_id, 30, "Analyzing audio...")
-                
-                # Run all detection
-                audio_analysis = analyze_audio(video_path)
-                report_progress(upload_id, 50, "Detecting black frames...")
-                black_frame_issues = detect_black_frames(video_path)
-                report_progress(upload_id, 60, "Detecting flash frames...")
-                flash_frame_issues = detect_flash_frames(video_path)
-                report_progress(upload_id, 70, "Detecting freeze frames...")
-                freeze_frame_issues = detect_freeze_frames(video_path)
-                report_progress(upload_id, 80, "Running AI visual analysis...")
-                visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough', known_exceptions=known_exceptions)
+                frames = extract_frames_smart(
+                    video_path,
+                    temp_dir,
+                    mode='thorough',
+                    target_frames=THOROUGH_MODE_MODEL_FRAMES,
+                )
+                report_progress(upload_id, 30, "Running comprehensive technical checks...")
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    audio_future = executor.submit(analyze_audio, video_path)
+                    black_future = executor.submit(detect_black_frames, video_path)
+                    flash_future = executor.submit(detect_flash_frames, video_path)
+                    freeze_future = executor.submit(detect_freeze_frames, video_path)
+                    visual_future = executor.submit(
+                        analyze_with_gemini,
+                        frames,
+                        os.path.basename(blob_name),
+                        'thorough',
+                        known_exceptions,
+                    )
+
+                    audio_analysis = audio_future.result()
+                    black_frame_issues = black_future.result()
+                    flash_frame_issues = flash_future.result()
+                    freeze_frame_issues = freeze_future.result()
+                    visual_analysis = visual_future.result()
                 
                 # Merge all FFmpeg-detected issues into visual analysis
                 all_ffmpeg_issues = black_frame_issues + flash_frame_issues + freeze_frame_issues
                 visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
+
+            report_progress(upload_id, 88, "Finalizing findings...")
             
             # Submit results
             report_progress(upload_id, 95, "Submitting results...")
