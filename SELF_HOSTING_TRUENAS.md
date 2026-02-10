@@ -28,7 +28,7 @@ Use the official Supabase self-hosted Docker stack on your TrueNAS Docker host. 
 From this repo (with Supabase CLI installed), apply migrations to your self-hosted database:
 
 ```bash
-supabase db push --db-url "postgresql://postgres:<DB_PASSWORD>@<DB_HOST>:5432/postgres"
+npm run selfhost:migrate-db -- "postgresql://postgres:<DB_PASSWORD>@<DB_HOST>:5432/postgres"
 ```
 
 ## 3) Configure Frontend
@@ -36,7 +36,7 @@ supabase db push --db-url "postgresql://postgres:<DB_PASSWORD>@<DB_HOST>:5432/po
 Create `.env` from `.env.example`:
 
 ```bash
-cp .env.example .env
+npm run selfhost:bootstrap-env
 ```
 
 Set:
@@ -48,6 +48,12 @@ Optional:
 
 - `VITE_FUNCTIONS_BASE_URL=https://<your-functions-base>/functions/v1`
   - Use this only if your functions are hosted outside Supabase.
+
+Validate config before deploy:
+
+```bash
+npm run selfhost:check-env
+```
 
 ## 4) Configure Function Secrets
 
@@ -72,7 +78,11 @@ Update analyzer service env vars:
 - `GCS_BUCKET=<your-video-analysis-bucket>`
 - `GCP_CALLBACK_SECRET=<shared-secret>`
 
-Then redeploy Cloud Run.
+Then redeploy Cloud Run:
+
+```bash
+scripts/selfhost/redeploy-analyzer.sh <GCP_PROJECT_ID> <SUPABASE_URL> <GCS_BUCKET>
+```
 
 ## 6) Validate End-to-End
 
@@ -88,6 +98,7 @@ Then redeploy Cloud Run.
 
 ```bash
 git checkout self-hosted-rebuild
+npm run selfhost:check-env
 npm run lint
 npm run test
 npm run build

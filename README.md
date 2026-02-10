@@ -35,7 +35,7 @@ npm install
 2. Create local env:
 
 ```bash
-cp .env.example .env
+npm run selfhost:bootstrap-env
 ```
 
 3. Fill `.env` values:
@@ -103,6 +103,7 @@ For a clean self-hosted environment, apply all migrations in order.
 Before pushing/deploying this branch:
 
 ```bash
+npm run selfhost:check-env
 npm run lint
 npm run test
 npm run build
@@ -111,3 +112,5 @@ npm run build
 ## Related Docs
 
 - `GCP_SETUP_GUIDE.md`: Cloud Run worker + Eventarc + callback flow
+- `SELF_HOSTING_TRUENAS.md`: TrueNAS-oriented deployment model
+- `SELF_HOSTING_RUNBOOK.md`: exact execution order and commands

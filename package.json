@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "selfhost:check-env": "bash ./scripts/selfhost/check-required-env.sh"
+    "selfhost:bootstrap-env": "bash ./scripts/selfhost/bootstrap-env.sh",
+    "selfhost:check-env": "bash ./scripts/selfhost/check-required-env.sh",
+    "selfhost:migrate-db": "bash ./scripts/selfhost/migrate-db.sh"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
