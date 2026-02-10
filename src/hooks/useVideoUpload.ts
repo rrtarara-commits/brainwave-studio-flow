@@ -69,6 +69,9 @@ export interface VideoUpload {
   analysisMode?: AnalysisMode;
 }
 
+const MAX_DEEP_ANALYSIS_WAIT_MS = 20 * 60 * 1000; // 20 minutes
+const MAX_POLL_ERRORS = 12; // 12 * 3s = ~36s of persistent polling failures
+
 export function useVideoUpload() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -77,6 +80,17 @@ export function useVideoUpload() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollStartedAtRef = useRef<number>(0);
+  const pollErrorCountRef = useRef<number>(0);
+  const missingProgressColumnWarnedRef = useRef<boolean>(false);
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    setIsDeepAnalyzing(false);
+  }, []);
 
   // Poll for deep analysis results
   const pollDeepAnalysis = useCallback((uploadId: string) => {
@@ -85,18 +99,94 @@ export function useVideoUpload() {
       clearInterval(pollIntervalRef.current);
     }
 
+    pollStartedAtRef.current = Date.now();
+    pollErrorCountRef.current = 0;
+    missingProgressColumnWarnedRef.current = false;
     setIsDeepAnalyzing(true);
 
     pollIntervalRef.current = setInterval(async () => {
       try {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from('video_uploads')
           .select('status, deep_analysis_status, deep_analysis_progress, visual_analysis, audio_analysis, qc_passed, qc_result')
           .eq('id', uploadId)
           .single();
 
+        if (error && /deep_analysis_progress/i.test(error.message || '')) {
+          if (!missingProgressColumnWarnedRef.current) {
+            missingProgressColumnWarnedRef.current = true;
+            toast({
+              variant: 'destructive',
+              title: 'Database migration required',
+              description: 'Missing deep-analysis progress column. Run latest Supabase migrations to show live QC progress.',
+            });
+          }
+
+          // Fallback query for older schemas that don't yet include deep_analysis_progress.
+          const fallback = await supabase
+            .from('video_uploads')
+            .select('status, deep_analysis_status, visual_analysis, audio_analysis, qc_passed, qc_result')
+            .eq('id', uploadId)
+            .single();
+          data = (fallback.data as (typeof data & { deep_analysis_progress?: unknown }) | null) ?? null;
+          error = fallback.error;
+        }
+
         if (error) {
           console.error('Poll error:', error);
+          pollErrorCountRef.current += 1;
+
+          if (pollErrorCountRef.current >= MAX_POLL_ERRORS) {
+            stopPolling();
+            setUpload(prev => prev ? {
+              ...prev,
+              deepAnalysisStatus: 'failed',
+              deepAnalysisProgress: {
+                percent: prev.deepAnalysisProgress?.percent || 0,
+                stage: 'Deep analysis monitoring failed',
+              },
+            } : null);
+
+            toast({
+              variant: 'destructive',
+              title: 'Deep analysis monitoring failed',
+              description: 'Could not read analysis status updates. Check DB schema and Supabase function logs.',
+            });
+          }
+          return;
+        }
+
+        pollErrorCountRef.current = 0;
+
+        const elapsedMs = Date.now() - pollStartedAtRef.current;
+        const status = data?.deep_analysis_status || 'pending';
+        if (elapsedMs > MAX_DEEP_ANALYSIS_WAIT_MS && (status === 'pending' || status === 'processing' || status === 'none')) {
+          await supabase
+            .from('video_uploads')
+            .update({
+              deep_analysis_status: 'failed',
+              deep_analysis_progress: {
+                percent: 100,
+                stage: 'Timed out waiting for deep analysis worker',
+              },
+            })
+            .eq('id', uploadId);
+
+          stopPolling();
+          setUpload(prev => prev ? {
+            ...prev,
+            deepAnalysisStatus: 'failed',
+            deepAnalysisProgress: {
+              percent: 100,
+              stage: 'Timed out waiting for deep analysis worker',
+            },
+          } : null);
+
+          toast({
+            variant: 'destructive',
+            title: 'Deep analysis timed out',
+            description: 'Worker did not report progress in time. Check GCS trigger, Cloud Run env vars, and callback secrets.',
+          });
           return;
         }
 
@@ -179,11 +269,7 @@ export function useVideoUpload() {
           });
 
           // Stop polling
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
-          setIsDeepAnalyzing(false);
+          stopPolling();
 
           toast({
             title: 'Deep Analysis Complete',
@@ -192,13 +278,14 @@ export function useVideoUpload() {
 
         } else if (data?.deep_analysis_status === 'failed') {
           // Analysis failed
-          setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'failed' } : null);
-          
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
-          setIsDeepAnalyzing(false);
+          const progress = data.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
+          setUpload(prev => prev ? {
+            ...prev,
+            deepAnalysisStatus: 'failed',
+            deepAnalysisProgress: progress || prev.deepAnalysisProgress,
+          } : null);
+
+          stopPolling();
 
           toast({
             variant: 'destructive',
@@ -216,26 +303,29 @@ export function useVideoUpload() {
         } else {
           // Even in pending/other states, update progress if available
           const progress = data?.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
-          if (progress && progress.percent > 0) {
+          if (progress) {
             setUpload(prev => prev ? { ...prev, deepAnalysisProgress: progress } : null);
           }
         }
 
       } catch (err) {
         console.error('Polling error:', err);
+        pollErrorCountRef.current += 1;
+        if (pollErrorCountRef.current >= MAX_POLL_ERRORS) {
+          stopPolling();
+          setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'failed' } : null);
+        }
       }
     }, 3000); // Poll every 3 seconds
 
-  }, [toast]);
+  }, [toast, stopPolling]);
 
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
+      stopPolling();
     };
-  }, []);
+  }, [stopPolling]);
 
   // Run QC analysis
   const analyzeVideo = useCallback(async (
@@ -471,15 +561,11 @@ export function useVideoUpload() {
   // Reset state
   const reset = useCallback(() => {
     // Clear polling
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
+    stopPolling();
     setUpload(null);
     setIsUploading(false);
     setIsAnalyzing(false);
-    setIsDeepAnalyzing(false);
-  }, []);
+  }, [stopPolling]);
 
   // Update filename after rename
   const updateFilename = useCallback((newFilename: string, newStoragePath: string) => {

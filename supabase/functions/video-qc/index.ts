@@ -8,7 +8,7 @@ const corsHeaders = {
 };
 
 // GCS configuration
-const GCS_BUCKET = 'tcvstudioanalyze';
+const GCS_BUCKET = Deno.env.get('GCS_BUCKET') || 'tcvstudioanalyze';
 const GCS_API_URL = 'https://storage.googleapis.com/upload/storage/v1/b';
 
 interface QCRequest {
@@ -539,7 +539,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Starting QC analysis for upload ${uploadId}, file: ${fileName}, user: ${user.email}`);
+    console.log(`Starting QC analysis for upload ${uploadId}, file: ${fileName}, user: ${user.email}, gcsBucket: ${GCS_BUCKET}`);
 
     // Update status to analyzing
     await serviceClient
@@ -588,6 +588,7 @@ Deno.serve(async (req) => {
         qc_passed: passed,
         analyzed_at: new Date().toISOString(),
         deep_analysis_status: 'pending', // Will be processed by GCP Cloud Run
+        deep_analysis_progress: { percent: 0, stage: 'Queued for deep analysis' },
       })
       .eq('id', uploadId);
 
@@ -602,6 +603,7 @@ Deno.serve(async (req) => {
           qc_passed: passed,
           analyzed_at: new Date().toISOString(),
           deep_analysis_status: 'pending',
+          deep_analysis_progress: { percent: 0, stage: 'Queued for deep analysis' },
         })
         .eq('id', uploadId);
       
@@ -627,13 +629,19 @@ Deno.serve(async (req) => {
           console.log(`GCS streaming upload complete for ${uploadId}, deep analysis will be triggered`);
           await serviceClient
             .from('video_uploads')
-            .update({ deep_analysis_status: 'processing' })
+            .update({
+              deep_analysis_status: 'processing',
+              deep_analysis_progress: { percent: 5, stage: 'Queued in GCP worker' },
+            })
             .eq('id', uploadId);
         } else {
           console.error(`GCS streaming upload failed for ${uploadId}`);
           await serviceClient
             .from('video_uploads')
-            .update({ deep_analysis_status: 'failed' })
+            .update({
+              deep_analysis_status: 'failed',
+              deep_analysis_progress: { percent: 100, stage: 'Failed to queue deep analysis' },
+            })
             .eq('id', uploadId);
         }
       })()

@@ -86,7 +86,7 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 
 ```bash
 # Create bucket (replace with your unique name)
-gsutil mb -l us-central1 gs://tcv-video-uploads-$PROJECT_ID
+gsutil mb -l us-central1 gs://tcvstudioanalyze
 
 # Note: We recommend using 'tcvstudioanalyze' as the bucket name for the analyzer
 ```
@@ -128,7 +128,7 @@ gsutil lifecycle set /tmp/lifecycle.json gs://tcvstudioanalyze
 ```bash
 gsutil iam ch \
   serviceAccount:tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com:objectViewer \
-  gs://tcv-video-uploads-$PROJECT_ID
+  gs://tcvstudioanalyze
 
 # Also grant write access for the config/feedback.json (Memory Layer)
 gsutil iam ch \
@@ -168,7 +168,7 @@ cd gcp-cloud-run
 
 # Build and push container
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions="_GCS_BUCKET=tcv-video-uploads-$PROJECT_ID,_SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co"
+  --substitutions="_GCS_BUCKET=tcvstudioanalyze,_SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co"
 ```
 
 ### 5.2 Manual Deploy (Alternative)
@@ -192,8 +192,8 @@ gcloud run deploy tcv-video-analyzer \
   --timeout 900 \
   --concurrency 1 \
   --max-instances 10 \
-  --set-env-vars "GCS_BUCKET=tcv-video-uploads-$PROJECT_ID,SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co" \
-  --set-secrets "GCP_CALLBACK_SECRET=GCP_CALLBACK_SECRET:latest" \
+  --set-env-vars "GCS_BUCKET=tcvstudioanalyze,SUPABASE_URL=https://hdytpmbgrhaxyjvvpewy.supabase.co" \
+  --set-secrets "GCP_CALLBACK_SECRET=GCP_CALLBACK_SECRET:latest,SUPABASE_SERVICE_ROLE_KEY=SUPABASE_SERVICE_ROLE_KEY:latest" \
   --service-account "tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com" \
   --allow-unauthenticated
 ```
@@ -228,7 +228,7 @@ gcloud eventarc triggers create tcv-video-trigger \
   --destination-run-service tcv-video-analyzer \
   --destination-run-region us-central1 \
   --event-filters "type=google.cloud.storage.object.v1.finalized" \
-  --event-filters "bucket=tcv-video-uploads-$PROJECT_ID" \
+  --event-filters "bucket=tcvstudioanalyze" \
   --service-account "tcv-analyzer@$PROJECT_ID.iam.gserviceaccount.com"
 ```
 
@@ -250,7 +250,7 @@ cat > /tmp/cors.json << 'EOF'
 ]
 EOF
 
-gsutil cors set /tmp/cors.json gs://tcv-video-uploads-$PROJECT_ID
+gsutil cors set /tmp/cors.json gs://tcvstudioanalyze
 ```
 
 ---
@@ -309,7 +309,7 @@ curl $SERVICE_URL/health
 
 1. Upload a test video to GCS:
 ```bash
-gsutil cp test-video.mp4 gs://tcv-video-uploads-$PROJECT_ID/uploads/test-123/test-video.mp4
+gsutil cp test-video.mp4 gs://tcvstudioanalyze/uploads/test-123/test-video.mp4
 ```
 
 2. Check Cloud Run logs:

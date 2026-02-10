@@ -789,6 +789,34 @@ def report_progress(upload_id: str, percent: int, stage: str):
         print(f"[Progress] Error: {e}")
 
 
+def mark_deep_analysis_failed(upload_id: str, stage: str):
+    """Mark deep analysis as failed in Supabase when callback/progress flow breaks."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        print(f"[Failure] Skipping status update (missing config): {upload_id} - {stage}")
+        return
+
+    url = f"{SUPABASE_URL}/rest/v1/video_uploads?id=eq.{upload_id}"
+    headers = {
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+    }
+    payload = {
+        'deep_analysis_status': 'failed',
+        'deep_analysis_progress': {'percent': 100, 'stage': stage[:120]},
+    }
+
+    try:
+        resp = requests.patch(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code < 300:
+            print(f"[Failure] Marked {upload_id} failed: {stage}")
+        else:
+            print(f"[Failure] Failed to mark {upload_id} failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as e:
+        print(f"[Failure] Error marking failed status: {e}")
+
+
 def submit_results(upload_id: str, visual_analysis: dict, audio_analysis: dict, success: bool = True):
     """Submit analysis results to Supabase edge function."""
     if not SUPABASE_URL or not GCP_CALLBACK_SECRET:
@@ -940,7 +968,16 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
             # Submit results
             report_progress(upload_id, 95, "Submitting results...")
             print(f"[Job {job_id}] Submitting results...")
-            submit_results(upload_id, visual_analysis, audio_analysis, success=True)
+            submitted = submit_results(upload_id, visual_analysis, audio_analysis, success=True)
+            if not submitted:
+                mark_deep_analysis_failed(upload_id, "Callback submission failed")
+                with jobs_lock:
+                    processing_jobs[job_id] = {
+                        'status': 'failed',
+                        'upload_id': upload_id,
+                        'error': 'callback_submission_failed'
+                    }
+                return
             
             # Update job status
             with jobs_lock:
@@ -964,6 +1001,7 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
             {'issues': [], 'summary': 'Analysis failed'},
             success=False
         )
+        mark_deep_analysis_failed(upload_id, f"Analysis failed: {str(e)[:100]}")
         
         # Update job status
         with jobs_lock:
