@@ -60,22 +60,35 @@ functions_env="${ROOT_DIR}/supabase/functions/.env"
 require_file "$frontend_env"
 require_file "$functions_env"
 
-check_var "$frontend_env" "VITE_SUPABASE_URL"
-check_var "$frontend_env" "VITE_SUPABASE_PUBLISHABLE_KEY"
-ensure_not_placeholder "$frontend_env" "VITE_SUPABASE_URL"
-ensure_not_placeholder "$frontend_env" "VITE_SUPABASE_PUBLISHABLE_KEY"
+errors=0
 
-check_var "$functions_env" "SUPABASE_URL"
-check_var "$functions_env" "SUPABASE_ANON_KEY"
-check_var "$functions_env" "SUPABASE_SERVICE_ROLE_KEY"
-check_var "$functions_env" "LOVABLE_API_KEY"
-check_var "$functions_env" "GCS_BUCKET"
-check_var "$functions_env" "GCP_CALLBACK_SECRET"
-ensure_not_placeholder "$functions_env" "SUPABASE_URL"
-ensure_not_placeholder "$functions_env" "SUPABASE_ANON_KEY"
-ensure_not_placeholder "$functions_env" "SUPABASE_SERVICE_ROLE_KEY"
-ensure_not_placeholder "$functions_env" "LOVABLE_API_KEY"
-ensure_not_placeholder "$functions_env" "GCS_BUCKET"
-ensure_not_placeholder "$functions_env" "GCP_CALLBACK_SECRET"
+run_check() {
+  if ! "$@"; then
+    errors=$((errors + 1))
+  fi
+}
+
+run_check check_var "$frontend_env" "VITE_SUPABASE_URL"
+run_check check_var "$frontend_env" "VITE_SUPABASE_PUBLISHABLE_KEY"
+run_check ensure_not_placeholder "$frontend_env" "VITE_SUPABASE_URL"
+run_check ensure_not_placeholder "$frontend_env" "VITE_SUPABASE_PUBLISHABLE_KEY"
+
+run_check check_var "$functions_env" "SUPABASE_URL"
+run_check check_var "$functions_env" "SUPABASE_ANON_KEY"
+run_check check_var "$functions_env" "SUPABASE_SERVICE_ROLE_KEY"
+run_check check_var "$functions_env" "LOVABLE_API_KEY"
+run_check check_var "$functions_env" "GCS_BUCKET"
+run_check check_var "$functions_env" "GCP_CALLBACK_SECRET"
+run_check ensure_not_placeholder "$functions_env" "SUPABASE_URL"
+run_check ensure_not_placeholder "$functions_env" "SUPABASE_ANON_KEY"
+run_check ensure_not_placeholder "$functions_env" "SUPABASE_SERVICE_ROLE_KEY"
+run_check ensure_not_placeholder "$functions_env" "LOVABLE_API_KEY"
+run_check ensure_not_placeholder "$functions_env" "GCS_BUCKET"
+run_check ensure_not_placeholder "$functions_env" "GCP_CALLBACK_SECRET"
+
+if [[ "$errors" -gt 0 ]]; then
+  echo "Self-host environment check failed with ${errors} issue(s)."
+  exit 1
+fi
 
 echo "Self-host environment check passed."
