@@ -1,3 +1,4 @@
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 import { createErrorResponse } from '../_shared/error-utils.ts';
 
