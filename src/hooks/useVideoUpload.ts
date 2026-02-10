@@ -215,7 +215,7 @@ export function useVideoUpload() {
           } : null);
         } else {
           // Even in pending/other states, update progress if available
-          const progress = data?.deep_analysis_progress as DeepAnalysisProgress | null;
+          const progress = data?.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
           if (progress && progress.percent > 0) {
             setUpload(prev => prev ? { ...prev, deepAnalysisProgress: progress } : null);
           }
