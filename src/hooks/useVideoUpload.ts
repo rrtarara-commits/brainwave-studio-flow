@@ -46,6 +46,11 @@ export interface DeepAnalysisResult {
   };
 }
 
+export interface DeepAnalysisProgress {
+  percent: number;
+  stage: string;
+}
+
 export interface VideoUpload {
   id: string;
   projectId: string;
@@ -58,6 +63,7 @@ export interface VideoUpload {
   dismissedFlags: string[];
   frameioLink?: string;
   deepAnalysisStatus?: 'pending' | 'processing' | 'complete' | 'failed';
+  deepAnalysisProgress?: DeepAnalysisProgress;
   visualAnalysis?: DeepAnalysisResult['visual'];
   audioAnalysis?: DeepAnalysisResult['audio'];
   analysisMode?: AnalysisMode;
@@ -85,7 +91,7 @@ export function useVideoUpload() {
       try {
         const { data, error } = await supabase
           .from('video_uploads')
-          .select('status, deep_analysis_status, visual_analysis, audio_analysis, qc_passed, qc_result')
+          .select('status, deep_analysis_status, deep_analysis_progress, visual_analysis, audio_analysis, qc_passed, qc_result')
           .eq('id', uploadId)
           .single();
 
@@ -201,7 +207,18 @@ export function useVideoUpload() {
           });
 
         } else if (data?.deep_analysis_status === 'processing') {
-          setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'processing' } : null);
+          const progress = data.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
+          setUpload(prev => prev ? { 
+            ...prev, 
+            deepAnalysisStatus: 'processing',
+            deepAnalysisProgress: progress || prev.deepAnalysisProgress,
+          } : null);
+        } else {
+          // Even in pending/other states, update progress if available
+          const progress = data?.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
+          if (progress && progress.percent > 0) {
+            setUpload(prev => prev ? { ...prev, deepAnalysisProgress: progress } : null);
+          }
         }
 
       } catch (err) {

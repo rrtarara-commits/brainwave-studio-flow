@@ -21,6 +21,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search, MessageSquare } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
+import { Progress } from '@/components/ui/progress';
 import { QCFlagsList } from './QCFlagsList';
 import { FilenameStandardizer } from './FilenameStandardizer';
 import { useVideoUpload, AnalysisMode } from '@/hooks/useVideoUpload';
@@ -365,14 +366,23 @@ export function VideoUploadModal({
 
             {/* Deep Analysis Status */}
             {isDeepAnalyzing && (
-              <div className="flex items-center gap-3 p-4 bg-primary/5 border border-primary/20 rounded-lg animate-pulse">
-                <Loader2 className="h-5 w-5 text-primary animate-spin" />
-                <div className="flex-1">
-                  <p className="font-medium text-primary">Deep Analysis in Progress</p>
-                  <p className="text-xs text-muted-foreground">
-                    Analyzing video frames and audio levels with AI...
-                  </p>
+              <div className="p-4 bg-primary/5 border border-primary/20 rounded-lg space-y-3">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-5 w-5 text-primary animate-spin flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-primary">Deep Analysis in Progress</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {upload?.deepAnalysisProgress?.stage || 'Preparing analysis...'}
+                    </p>
+                  </div>
+                  <span className="text-sm font-mono font-medium text-primary flex-shrink-0">
+                    {upload?.deepAnalysisProgress?.percent || 0}%
+                  </span>
                 </div>
+                <Progress 
+                  value={upload?.deepAnalysisProgress?.percent || 0} 
+                  className="h-2"
+                />
               </div>
             )}
 

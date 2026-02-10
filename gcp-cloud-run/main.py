@@ -26,6 +26,7 @@ app = Flask(__name__)
 # Configuration
 GCS_BUCKET = os.environ.get('GCS_BUCKET', 'tcv-video-uploads')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_SERVICE_ROLE_KEY = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip()
 # Strip whitespace/newlines from secret to prevent header errors
 GCP_CALLBACK_SECRET = (os.environ.get('GCP_CALLBACK_SECRET') or '').strip()
 PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT')
@@ -622,6 +623,33 @@ def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'tho
         }
 
 
+def report_progress(upload_id: str, percent: int, stage: str):
+    """Report processing progress to Supabase via REST API."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        print(f"[Progress] Skipping (missing config): {percent}% - {stage}")
+        return
+    
+    url = f"{SUPABASE_URL}/rest/v1/video_uploads?id=eq.{upload_id}"
+    headers = {
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+    }
+    payload = {
+        'deep_analysis_progress': json.dumps({'percent': percent, 'stage': stage})
+    }
+    
+    try:
+        resp = requests.patch(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code < 300:
+            print(f"[Progress] {upload_id}: {percent}% - {stage}")
+        else:
+            print(f"[Progress] Update failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as e:
+        print(f"[Progress] Error: {e}")
+
+
 def submit_results(upload_id: str, visual_analysis: dict, audio_analysis: dict, success: bool = True):
     """Submit analysis results to Supabase edge function."""
     if not SUPABASE_URL or not GCP_CALLBACK_SECRET:
@@ -684,8 +712,10 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
         # Create temp directory for processing
         with tempfile.TemporaryDirectory() as temp_dir:
             # Download video
+            report_progress(upload_id, 5, "Downloading video...")
             print(f"[Job {job_id}] Downloading video...")
             video_path = download_video(bucket_name, blob_name, temp_dir)
+            report_progress(upload_id, 15, "Extracting frames...")
             
             # Load known exceptions from Memory Layer
             known_exceptions = load_known_exceptions()
@@ -695,19 +725,26 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                 # Quick mode: minimal analysis with QC Editor persona
                 print(f"[Job {job_id}] Running quick analysis...")
                 frames = extract_frames_smart(video_path, temp_dir, mode='quick')
+                report_progress(upload_id, 35, "Analyzing audio...")
                 audio_analysis = analyze_audio(video_path)
+                report_progress(upload_id, 60, "Running AI visual analysis...")
                 visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='quick', known_exceptions=known_exceptions)
                 
             else:
                 # Thorough mode: comprehensive analysis with Creative Director persona
                 print(f"[Job {job_id}] Running thorough analysis...")
                 frames = extract_frames_smart(video_path, temp_dir, mode='thorough')
+                report_progress(upload_id, 30, "Analyzing audio...")
                 
                 # Run all detection
                 audio_analysis = analyze_audio(video_path)
+                report_progress(upload_id, 50, "Detecting black frames...")
                 black_frame_issues = detect_black_frames(video_path)
+                report_progress(upload_id, 60, "Detecting flash frames...")
                 flash_frame_issues = detect_flash_frames(video_path)
+                report_progress(upload_id, 70, "Detecting freeze frames...")
                 freeze_frame_issues = detect_freeze_frames(video_path)
+                report_progress(upload_id, 80, "Running AI visual analysis...")
                 visual_analysis = analyze_with_gemini(frames, os.path.basename(blob_name), mode='thorough', known_exceptions=known_exceptions)
                 
                 # Merge all FFmpeg-detected issues into visual analysis
@@ -715,6 +752,7 @@ def process_video_async(bucket_name: str, blob_name: str, upload_id: str, mode: 
                 visual_analysis['issues'] = visual_analysis.get('issues', []) + all_ffmpeg_issues
             
             # Submit results
+            report_progress(upload_id, 95, "Submitting results...")
             print(f"[Job {job_id}] Submitting results...")
             submit_results(upload_id, visual_analysis, audio_analysis, success=True)
             

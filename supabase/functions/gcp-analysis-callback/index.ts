@@ -164,6 +164,7 @@ Deno.serve(async (req) => {
         visual_analysis: visualAnalysis,
         audio_analysis: audioAnalysis,
         deep_analysis_status: success ? 'completed' : 'failed',
+        deep_analysis_progress: { percent: 100, stage: 'Complete' },
       })
       .eq('id', uploadId);
 
