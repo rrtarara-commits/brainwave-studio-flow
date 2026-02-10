@@ -85,7 +85,7 @@ export function useVideoUpload() {
       try {
         const { data, error } = await supabase
           .from('video_uploads')
-          .select('deep_analysis_status, visual_analysis, audio_analysis, qc_passed')
+          .select('status, deep_analysis_status, visual_analysis, audio_analysis, qc_passed, qc_result')
           .eq('id', uploadId)
           .single();
 
