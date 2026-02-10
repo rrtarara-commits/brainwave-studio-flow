@@ -152,10 +152,13 @@ Deno.serve(async (req) => {
       deepAnalysisCompletedAt: new Date().toISOString(),
     };
 
-    // Update the upload record
+    // Update the upload record — also reconcile primary status as a data integrity guard
+    // This ensures that even if the video-qc edge function's status update failed,
+    // the primary status is corrected when deep analysis completes.
     const { error: updateError } = await serviceClient
       .from('video_uploads')
       .update({
+        status: 'reviewed',
         qc_result: updatedQcResult,
         qc_passed: !hasErrors,
         visual_analysis: visualAnalysis,

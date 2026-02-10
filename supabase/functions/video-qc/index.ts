@@ -541,8 +541,8 @@ Deno.serve(async (req) => {
       },
     };
 
-    // Update the upload record
-    await serviceClient
+    // Update the upload record — MUST succeed for correct state transition
+    const { error: updateError } = await serviceClient
       .from('video_uploads')
       .update({
         status: 'reviewed',
@@ -552,6 +552,29 @@ Deno.serve(async (req) => {
         deep_analysis_status: 'pending', // Will be processed by GCP Cloud Run
       })
       .eq('id', uploadId);
+
+    if (updateError) {
+      console.error('CRITICAL: Failed to update upload status to reviewed:', updateError);
+      // Retry once
+      const { error: retryError } = await serviceClient
+        .from('video_uploads')
+        .update({
+          status: 'reviewed',
+          qc_result: result,
+          qc_passed: passed,
+          analyzed_at: new Date().toISOString(),
+          deep_analysis_status: 'pending',
+        })
+        .eq('id', uploadId);
+      
+      if (retryError) {
+        console.error('CRITICAL: Retry also failed:', retryError);
+        return new Response(
+          JSON.stringify({ error: 'Failed to save QC results' }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
 
     console.log(`QC analysis complete: ${passed ? 'PASSED' : 'NEEDS REVIEW'}, ${allFlags.length} flags`);
 
