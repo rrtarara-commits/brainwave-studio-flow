@@ -623,6 +623,33 @@ def analyze_with_gemini(frame_paths: list[str], file_name: str, mode: str = 'tho
         }
 
 
+def report_progress(upload_id: str, percent: int, stage: str):
+    """Report processing progress to Supabase via REST API."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        print(f"[Progress] Skipping (missing config): {percent}% - {stage}")
+        return
+    
+    url = f"{SUPABASE_URL}/rest/v1/video_uploads?id=eq.{upload_id}"
+    headers = {
+        'apikey': SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+    }
+    payload = {
+        'deep_analysis_progress': json.dumps({'percent': percent, 'stage': stage})
+    }
+    
+    try:
+        resp = requests.patch(url, json=payload, headers=headers, timeout=10)
+        if resp.status_code < 300:
+            print(f"[Progress] {upload_id}: {percent}% - {stage}")
+        else:
+            print(f"[Progress] Update failed ({resp.status_code}): {resp.text[:200]}")
+    except Exception as e:
+        print(f"[Progress] Error: {e}")
+
+
 def submit_results(upload_id: str, visual_analysis: dict, audio_analysis: dict, success: bool = True):
     """Submit analysis results to Supabase edge function."""
     if not SUPABASE_URL or not GCP_CALLBACK_SECRET:
