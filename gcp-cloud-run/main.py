@@ -152,17 +152,57 @@ def acquire_deep_analysis_lock(
         return True
 
 
+def _is_permanent_gcs_download_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    # Retrying these generally won't help.
+    permanent_markers = (
+        '403',
+        'forbidden',
+        'permission',
+        '401',
+        'unauthorized',
+        '404',
+        'not found',
+    )
+    return any(marker in msg for marker in permanent_markers)
+
+
 def download_video(bucket_name: str, blob_name: str, temp_dir: str) -> str:
-    """Download video from GCS to local temp storage."""
+    """Download video from GCS to local temp storage with retries."""
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    
+
     local_path = os.path.join(temp_dir, os.path.basename(blob_name))
-    blob.download_to_filename(local_path)
-    
-    print(f"Downloaded {blob_name} to {local_path}")
-    return local_path
+    max_attempts = 5
+    base_backoff_seconds = 2.0
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Ensure object metadata is resolvable before download.
+            blob.reload(timeout=60)
+            blob.download_to_filename(local_path, timeout=300)
+            print(f"Downloaded {blob_name} to {local_path} on attempt {attempt}")
+            return local_path
+        except Exception as e:
+            if os.path.exists(local_path):
+                try:
+                    os.remove(local_path)
+                except OSError:
+                    pass
+
+            permanent = _is_permanent_gcs_download_error(e)
+            print(
+                f"GCS download attempt {attempt}/{max_attempts} failed "
+                f"(permanent={permanent}): {e}"
+            )
+            if permanent or attempt == max_attempts:
+                raise
+
+            backoff_seconds = min(20.0, base_backoff_seconds * (2 ** (attempt - 1)))
+            time.sleep(backoff_seconds)
+
+    raise RuntimeError(f"Failed to download {blob_name} after {max_attempts} attempts")
 
 
 def get_video_duration(video_path: str) -> float:
