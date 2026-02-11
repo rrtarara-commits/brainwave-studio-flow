@@ -11,6 +11,7 @@ import { CheckCircle2, FileEdit, AlertCircle, Loader2 } from 'lucide-react';
 import { analyzeFilename, FilenameAnalysis } from '@/lib/filename-utils';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { getErrorMessage } from '@/lib/get-error-message';
 
 interface FilenameStandardizerProps {
   uploadId: string;
@@ -81,7 +82,7 @@ export function FilenameStandardizer({
       toast({
         variant: 'destructive',
         title: 'Rename failed',
-        description: error instanceof Error ? error.message : 'Could not rename file',
+        description: getErrorMessage(error, 'Could not rename file'),
       });
     } finally {
       setIsRenaming(false);

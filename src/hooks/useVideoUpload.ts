@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { invokeBackendFunction } from '@/lib/api/invoke-backend-function';
+import { getErrorMessage } from '@/lib/get-error-message';
 
 export type AnalysisMode = 'quick' | 'thorough';
 
@@ -373,7 +374,7 @@ export function useVideoUpload() {
       toast({
         variant: 'destructive',
         title: 'Analysis Failed',
-        description: error instanceof Error ? error.message : 'QC analysis failed',
+        description: getErrorMessage(error, 'QC analysis failed'),
       });
       setUpload(prev => prev ? { ...prev, status: 'failed' } : null);
     } finally {
@@ -451,7 +452,7 @@ export function useVideoUpload() {
       toast({
         variant: 'destructive',
         title: 'Upload Failed',
-        description: error instanceof Error ? error.message : 'Failed to upload video',
+        description: getErrorMessage(error, 'Failed to upload video'),
       });
       setIsUploading(false);
       return null;
@@ -552,7 +553,7 @@ export function useVideoUpload() {
       toast({
         variant: 'destructive',
         title: 'Submission Failed',
-        description: error instanceof Error ? error.message : 'Failed to submit to Frame.io',
+        description: getErrorMessage(error, 'Failed to submit to Frame.io'),
       });
       setUpload(prev => prev ? { ...prev, status: 'failed' } : null);
       return null;
