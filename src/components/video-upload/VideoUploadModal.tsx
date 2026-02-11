@@ -19,7 +19,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search, MessageSquare } from 'lucide-react';
+import { Loader2, Upload, CheckCircle2, AlertTriangle, Brain, ExternalLink, Link2, Zap, Search, MessageSquare, TerminalSquare, ChevronDown, ChevronUp } from 'lucide-react';
 import { VideoDropzone } from './VideoDropzone';
 import { Progress } from '@/components/ui/progress';
 import { QCFlagsList } from './QCFlagsList';
@@ -56,10 +56,12 @@ export function VideoUploadModal({
   const [useManualEntry, setUseManualEntry] = useState(false);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('thorough');
   const [includeQcComments, setIncludeQcComments] = useState(true);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const location = useLocation();
 
   const {
     upload,
+    diagnosticLog,
     isUploading,
     isAnalyzing,
     isDeepAnalyzing,
@@ -67,6 +69,7 @@ export function VideoUploadModal({
     dismissFlag,
     submitToFrameio,
     updateFilename,
+    clearDiagnosticLog,
     reset,
   } = useVideoUpload();
 
@@ -91,6 +94,7 @@ export function VideoUploadModal({
       setManualFeedback('');
       setUseManualEntry(false);
       setAnalysisMode('thorough');
+      setShowDiagnostics(false);
       reset();
     }
   }, [open, reset, isConnected]);
@@ -569,6 +573,73 @@ export function VideoUploadModal({
                 Open in Frame.io
               </a>
             </Button>
+          </div>
+        )}
+
+        {diagnosticLog.length > 0 && (
+          <div className="mt-4 border rounded-lg bg-muted/20">
+            <div className="flex items-center justify-between gap-2 p-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <TerminalSquare className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium">Upload Diagnostics</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {diagnosticLog.length} events captured for this upload session
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowDiagnostics(prev => !prev)}
+                >
+                  {showDiagnostics ? (
+                    <>
+                      <ChevronUp className="h-4 w-4 mr-1" />
+                      Hide
+                    </>
+                  ) : (
+                    <>
+                      <ChevronDown className="h-4 w-4 mr-1" />
+                      Show
+                    </>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearDiagnosticLog}
+                >
+                  Clear
+                </Button>
+              </div>
+            </div>
+
+            {showDiagnostics && (
+              <div className="border-t max-h-56 overflow-y-auto p-3 space-y-2">
+                {diagnosticLog.map((entry) => {
+                  const time = new Date(entry.at).toLocaleTimeString();
+                  const levelClass =
+                    entry.level === 'error'
+                      ? 'text-destructive'
+                      : entry.level === 'warn'
+                      ? 'text-amber-600'
+                      : 'text-muted-foreground';
+
+                  return (
+                    <div key={entry.id} className="text-xs font-mono leading-relaxed break-words">
+                      <span className="text-muted-foreground">[{time}]</span>{' '}
+                      <span className={`${levelClass} uppercase`}>{entry.level}</span>{' '}
+                      <span className="text-primary">{entry.stage}</span>{' '}
+                      <span>{entry.message}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
