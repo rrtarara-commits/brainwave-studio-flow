@@ -53,6 +53,14 @@ export interface DeepAnalysisProgress {
   stage: string;
 }
 
+export interface UploadDiagnosticEntry {
+  id: string;
+  at: string;
+  level: 'info' | 'warn' | 'error';
+  stage: string;
+  message: string;
+}
+
 export interface VideoUpload {
   id: string;
   projectId: string;
@@ -78,6 +86,7 @@ export function useVideoUpload() {
   const { user } = useAuth();
   const { toast } = useToast();
   const [upload, setUpload] = useState<VideoUpload | null>(null);
+  const [diagnosticLog, setDiagnosticLog] = useState<UploadDiagnosticEntry[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
@@ -94,6 +103,28 @@ export function useVideoUpload() {
     setIsDeepAnalyzing(false);
   }, []);
 
+  const pushDiagnostic = useCallback((
+    level: UploadDiagnosticEntry['level'],
+    stage: string,
+    message: string
+  ) => {
+    setDiagnosticLog(prev => {
+      const next: UploadDiagnosticEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        at: new Date().toISOString(),
+        level,
+        stage,
+        message,
+      };
+      // Keep only recent entries to prevent unbounded growth in long sessions.
+      return [...prev.slice(-149), next];
+    });
+  }, []);
+
+  const clearDiagnosticLog = useCallback(() => {
+    setDiagnosticLog([]);
+  }, []);
+
   // Poll for deep analysis results
   const pollDeepAnalysis = useCallback((uploadId: string) => {
     // Clear any existing polling
@@ -105,6 +136,11 @@ export function useVideoUpload() {
     pollErrorCountRef.current = 0;
     missingProgressColumnWarnedRef.current = false;
     setIsDeepAnalyzing(true);
+    pushDiagnostic('info', 'deep-analysis', `Started monitoring deep analysis for upload ${uploadId}.`);
+
+    let lastStatus = '';
+    let lastPercent = -1;
+    let lastStage = '';
 
     pollIntervalRef.current = setInterval(async () => {
       try {
@@ -122,6 +158,7 @@ export function useVideoUpload() {
               title: 'Database migration required',
               description: 'Missing deep-analysis progress column. Run latest Supabase migrations to show live QC progress.',
             });
+            pushDiagnostic('warn', 'deep-analysis', 'Missing deep_analysis_progress column. Using fallback query.');
           }
 
           // Fallback query for older schemas that don't yet include deep_analysis_progress.
@@ -137,6 +174,7 @@ export function useVideoUpload() {
         if (error) {
           console.error('Poll error:', error);
           pollErrorCountRef.current += 1;
+          pushDiagnostic('warn', 'deep-analysis', `Polling error (${pollErrorCountRef.current}/${MAX_POLL_ERRORS}): ${error.message}`);
 
           if (pollErrorCountRef.current >= MAX_POLL_ERRORS) {
             stopPolling();
@@ -154,6 +192,7 @@ export function useVideoUpload() {
               title: 'Deep analysis monitoring failed',
               description: 'Could not read analysis status updates. Check DB schema and Supabase function logs.',
             });
+            pushDiagnostic('error', 'deep-analysis', 'Deep analysis monitoring failed after repeated polling errors.');
           }
           return;
         }
@@ -162,6 +201,18 @@ export function useVideoUpload() {
 
         const elapsedMs = Date.now() - pollStartedAtRef.current;
         const status = data?.deep_analysis_status || 'pending';
+        const progress = (data?.deep_analysis_progress as unknown as DeepAnalysisProgress | null) || null;
+        const percent = progress?.percent ?? -1;
+        const stage = progress?.stage ?? '';
+
+        if (status !== lastStatus || percent !== lastPercent || stage !== lastStage) {
+          const percentText = percent >= 0 ? `${percent}%` : 'n/a';
+          pushDiagnostic('info', 'deep-analysis', `Status ${status} (${percentText})${stage ? `: ${stage}` : ''}`);
+          lastStatus = status;
+          lastPercent = percent;
+          lastStage = stage;
+        }
+
         if (elapsedMs > MAX_DEEP_ANALYSIS_WAIT_MS && (status === 'pending' || status === 'processing' || status === 'none')) {
           await supabase
             .from('video_uploads')
@@ -189,6 +240,7 @@ export function useVideoUpload() {
             title: 'Deep analysis timed out',
             description: 'Worker did not report progress in time. Check GCS trigger, Cloud Run env vars, and callback secrets.',
           });
+          pushDiagnostic('error', 'deep-analysis', 'Timed out waiting for deep-analysis worker.');
           return;
         }
 
@@ -277,10 +329,10 @@ export function useVideoUpload() {
             title: 'Deep Analysis Complete',
             description: 'Video visual and audio analysis results are ready for review.',
           });
+          pushDiagnostic('info', 'deep-analysis', 'Deep analysis completed successfully.');
 
         } else if (data?.deep_analysis_status === 'failed') {
           // Analysis failed
-          const progress = data.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
           setUpload(prev => prev ? {
             ...prev,
             deepAnalysisStatus: 'failed',
@@ -294,9 +346,9 @@ export function useVideoUpload() {
             title: 'Deep Analysis Failed',
             description: 'Video analysis could not be completed. You can still proceed with the upload.',
           });
+          pushDiagnostic('error', 'deep-analysis', progress?.stage || 'Deep analysis returned failed status.');
 
         } else if (data?.deep_analysis_status === 'processing') {
-          const progress = data.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
           setUpload(prev => prev ? { 
             ...prev, 
             deepAnalysisStatus: 'processing',
@@ -304,7 +356,6 @@ export function useVideoUpload() {
           } : null);
         } else {
           // Even in pending/other states, update progress if available
-          const progress = data?.deep_analysis_progress as unknown as DeepAnalysisProgress | null;
           if (progress) {
             setUpload(prev => prev ? { ...prev, deepAnalysisProgress: progress } : null);
           }
@@ -313,14 +364,16 @@ export function useVideoUpload() {
       } catch (err) {
         console.error('Polling error:', err);
         pollErrorCountRef.current += 1;
+        pushDiagnostic('warn', 'deep-analysis', `Unexpected polling exception (${pollErrorCountRef.current}/${MAX_POLL_ERRORS}).`);
         if (pollErrorCountRef.current >= MAX_POLL_ERRORS) {
           stopPolling();
           setUpload(prev => prev ? { ...prev, deepAnalysisStatus: 'failed' } : null);
+          pushDiagnostic('error', 'deep-analysis', 'Stopped deep-analysis polling after repeated exceptions.');
         }
       }
     }, 3000); // Poll every 3 seconds
 
-  }, [toast, stopPolling]);
+  }, [toast, stopPolling, pushDiagnostic]);
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -341,6 +394,7 @@ export function useVideoUpload() {
     setUpload(prev => prev ? { ...prev, status: 'analyzing' } : null);
 
     try {
+      pushDiagnostic('info', 'qc', `Invoking video-qc for ${uploadData.fileName} (${analysisMode}).`);
       const { data, error } = await invokeBackendFunction('video-qc', {
         body: {
           uploadId: uploadData.id,
@@ -356,6 +410,7 @@ export function useVideoUpload() {
       if (error) throw error;
 
       if (data?.success) {
+        pushDiagnostic('info', 'qc', 'QC completed; waiting for deep-analysis worker.');
         setUpload(prev => prev ? {
           ...prev,
           status: 'reviewed',
@@ -371,6 +426,7 @@ export function useVideoUpload() {
       }
     } catch (error) {
       console.error('QC analysis error:', error);
+      pushDiagnostic('error', 'qc', getErrorMessage(error, 'QC analysis failed'));
       toast({
         variant: 'destructive',
         title: 'Analysis Failed',
@@ -380,7 +436,7 @@ export function useVideoUpload() {
     } finally {
       setIsAnalyzing(false);
     }
-  }, [toast, pollDeepAnalysis]);
+  }, [toast, pollDeepAnalysis, pushDiagnostic]);
 
   // Upload file to storage and create record
   const uploadVideo = useCallback(async (
@@ -396,6 +452,8 @@ export function useVideoUpload() {
     }
 
     setIsUploading(true);
+    let createdUploadId: string | null = null;
+    pushDiagnostic('info', 'upload', `Starting upload: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)`);
 
     try {
       // Create upload record first
@@ -413,14 +471,18 @@ export function useVideoUpload() {
         .single();
 
       if (recordError) throw recordError;
+      createdUploadId = uploadRecord.id;
+      pushDiagnostic('info', 'upload', `Created upload record ${uploadRecord.id}`);
 
       // Upload to storage
       const storagePath = `${user.id}/${uploadRecord.id}/${file.name}`;
+      pushDiagnostic('info', 'upload', `Uploading file to storage path ${storagePath}`);
       const { error: storageError } = await supabase.storage
         .from('video-uploads')
         .upload(storagePath, file);
 
       if (storageError) throw storageError;
+      pushDiagnostic('info', 'upload', 'File upload to storage completed.');
 
       // Update record with storage path
       const { error: pathUpdateError } = await supabase
@@ -428,6 +490,7 @@ export function useVideoUpload() {
         .update({ storage_path: storagePath })
         .eq('id', uploadRecord.id);
       if (pathUpdateError) throw pathUpdateError;
+      pushDiagnostic('info', 'upload', 'Upload record updated with storage path.');
 
       const newUpload: VideoUpload = {
         id: uploadRecord.id,
@@ -449,15 +512,42 @@ export function useVideoUpload() {
       return newUpload;
     } catch (error) {
       console.error('Upload error:', error);
+      const errorMessage = getErrorMessage(error, 'Failed to upload video');
+
+      // If we created a DB record but storage upload failed, ensure it does not remain "pending".
+      if (createdUploadId) {
+        const stage = errorMessage.length > 180 ? `${errorMessage.slice(0, 177)}...` : errorMessage;
+        const { error: markFailedError } = await supabase
+          .from('video_uploads')
+          .update({
+            status: 'failed',
+            deep_analysis_status: 'failed',
+            deep_analysis_progress: {
+              percent: 100,
+              stage: `Upload failed: ${stage}`,
+            },
+          })
+          .eq('id', createdUploadId)
+          .is('storage_path', null);
+
+        if (markFailedError) {
+          console.error('Failed to mark upload record as failed:', markFailedError);
+          pushDiagnostic('error', 'upload', `Failed to mark DB upload as failed: ${markFailedError.message}`);
+        } else {
+          pushDiagnostic('warn', 'upload', `Marked upload ${createdUploadId} as failed.`);
+        }
+      }
+
+      pushDiagnostic('error', 'upload', errorMessage);
       toast({
         variant: 'destructive',
         title: 'Upload Failed',
-        description: getErrorMessage(error, 'Failed to upload video'),
+        description: errorMessage,
       });
       setIsUploading(false);
       return null;
     }
-  }, [user, toast, analyzeVideo]);
+  }, [user, toast, analyzeVideo, pushDiagnostic]);
 
   // Dismiss a flag
   const dismissFlag = useCallback((flagId: string) => {
@@ -483,6 +573,7 @@ export function useVideoUpload() {
     if (!upload) return null;
 
     setUpload(prev => prev ? { ...prev, status: 'uploading' } : null);
+    pushDiagnostic('info', 'frameio', `Submitting to Frame.io project ${frameioProjectId}.`);
 
     try {
       // Prepare QC comments if requested
@@ -523,6 +614,7 @@ export function useVideoUpload() {
         const frameioLink = data.data.shareLink;
         const commentsQueued = data.data.commentsQueued || 0;
         const versionStacked = data.data.versionStacked || false;
+        pushDiagnostic('info', 'frameio', `Frame.io upload complete${commentsQueued > 0 ? ` with ${commentsQueued} QC comments` : ''}.`);
         
         setUpload(prev => prev ? {
           ...prev,
@@ -550,6 +642,7 @@ export function useVideoUpload() {
       }
     } catch (error) {
       console.error('Frame.io submit error:', error);
+      pushDiagnostic('error', 'frameio', getErrorMessage(error, 'Failed to submit to Frame.io'));
       toast({
         variant: 'destructive',
         title: 'Submission Failed',
@@ -558,13 +651,14 @@ export function useVideoUpload() {
       setUpload(prev => prev ? { ...prev, status: 'failed' } : null);
       return null;
     }
-  }, [upload, toast]);
+  }, [upload, toast, pushDiagnostic]);
 
   // Reset state
   const reset = useCallback(() => {
     // Clear polling
     stopPolling();
     setUpload(null);
+    setDiagnosticLog([]);
     setIsUploading(false);
     setIsAnalyzing(false);
   }, [stopPolling]);
@@ -580,6 +674,7 @@ export function useVideoUpload() {
 
   return {
     upload,
+    diagnosticLog,
     isUploading,
     isAnalyzing,
     isDeepAnalyzing,
@@ -587,6 +682,7 @@ export function useVideoUpload() {
     dismissFlag,
     submitToFrameio,
     updateFilename,
+    clearDiagnosticLog,
     reset,
   };
 }
