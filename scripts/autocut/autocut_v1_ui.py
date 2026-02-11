@@ -28,7 +28,7 @@ from urllib.request import Request, urlopen
 
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".mxf", ".avi", ".m4v"}
 KEYNOTE_MOV_EXTENSIONS = {".mov", ".mp4", ".m4v"}
-SUPPORTED_DOWNLOAD_EXTENSIONS = {".key", ".pdf"} | VIDEO_EXTENSIONS
+SUPPORTED_DOWNLOAD_EXTENSIONS = {".key", ".pdf", ".json"} | VIDEO_EXTENSIONS
 PROJECT_KEY_RE = re.compile(r"([A-Za-z]{2,}\d{3,})")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -81,6 +81,7 @@ class ProjectInput:
     keynote_mov: Path | None
     video: Path | None
     script_pdf: Path | None
+    transcript_json: Path | None
 
 
 def project_key_from_name(name: str) -> str:
@@ -138,6 +139,11 @@ def choose_best_match(
                 value += 90
             if any(token in name for token in ("WIDE", "CAM", "MAIN", "ONCAM", "INTERVIEW")):
                 value -= 30
+        elif purpose == "transcript":
+            if any(token in name for token in ("TRANSCRIPT", "WHISPER", "CAPTION", "SUBTITLE", "SEGMENTS")):
+                value += 90
+            if any(token in name for token in ("SCRIPT", "KEYNOTE", "SLIDE", "DECK")):
+                value -= 20
         # Prefer shorter names when score ties.
         return (value, -len(name))
 
@@ -153,6 +159,7 @@ def resolve_projects(
     keynote_mov_path: Path | None,
     video_path: Path | None,
     script_path: Path | None,
+    transcript_path: Path | None,
 ) -> list[ProjectInput]:
     keynotes = iter_files(keynote_path, {".key"})
     if not keynotes:
@@ -161,6 +168,7 @@ def resolve_projects(
     keynote_mov_candidates = iter_files(keynote_mov_path, KEYNOTE_MOV_EXTENSIONS) if keynote_mov_path else []
     video_candidates = iter_files(video_path, VIDEO_EXTENSIONS) if video_path else []
     script_candidates = iter_files(script_path, {".pdf"}) if script_path else []
+    transcript_candidates = iter_files(transcript_path, {".json"}) if transcript_path else []
 
     projects: list[ProjectInput] = []
     for keynote in keynotes:
@@ -183,10 +191,18 @@ def resolve_projects(
             keynote_stem=keynote.stem,
             purpose="script",
         )
+        transcript_json = choose_best_match(
+            candidates=transcript_candidates,
+            project_key=key,
+            keynote_stem=keynote.stem,
+            purpose="transcript",
+        )
 
         # If there is exactly one script candidate, use it as default.
         if script_pdf is None and len(script_candidates) == 1:
             script_pdf = script_candidates[0]
+        if transcript_json is None and len(transcript_candidates) == 1:
+            transcript_json = transcript_candidates[0]
 
         projects.append(
             ProjectInput(
@@ -195,6 +211,7 @@ def resolve_projects(
                 keynote_mov=keynote_mov,
                 video=video,
                 script_pdf=script_pdf,
+                transcript_json=transcript_json,
             )
         )
     return projects
@@ -481,6 +498,7 @@ class AutocutV1UI:
         self.keynote_mov_var = tk.StringVar()
         self.video_var = tk.StringVar()
         self.script_var = tk.StringVar()
+        self.transcript_var = tk.StringVar()
         self.output_var = tk.StringVar(value=str((Path.cwd() / "autocut_output").resolve()))
         self.dropbox_url_var = tk.StringVar(value=DEFAULT_DROPBOX_SHARED_URL)
         self.dropbox_token_var = tk.StringVar(value=DEFAULT_DROPBOX_API_TOKEN)
@@ -495,6 +513,9 @@ class AutocutV1UI:
         self.fps_var = tk.StringVar(value="30")
         self.min_build_var = tk.StringVar(value="0.25")
         self.min_slide_var = tk.StringVar(value="1.0")
+        self.pause_threshold_var = tk.StringVar(value="2.8")
+        self.retake_preroll_var = tk.StringVar(value="0.8")
+        self.retake_postroll_var = tk.StringVar(value="5.5")
 
         self.export_xml_var = tk.BooleanVar(value=True)
         self.export_edl_var = tk.BooleanVar(value=True)
@@ -502,6 +523,8 @@ class AutocutV1UI:
         self.append_tail_var = tk.BooleanVar(value=True)
         self.continue_on_error_var = tk.BooleanVar(value=True)
         self.auto_fit_timing_var = tk.BooleanVar(value=True)
+        self.retake_cull_enabled_var = tk.BooleanVar(value=False)
+        self.retake_cull_pauses_var = tk.BooleanVar(value=True)
 
         self._configure_theme()
         self._build_layout()
@@ -670,6 +693,14 @@ class AutocutV1UI:
         self._path_row(
             path_frame,
             row=4,
+            label="Transcript JSON file/folder (optional for retake culling):",
+            variable=self.transcript_var,
+            file_types=[("JSON files", "*.json")],
+            allow_folder=True,
+        )
+        self._path_row(
+            path_frame,
+            row=5,
             label="Output folder:",
             variable=self.output_var,
             file_types=[],
@@ -678,7 +709,7 @@ class AutocutV1UI:
         )
         self._path_row(
             path_frame,
-            row=5,
+            row=6,
             label="Dropbox shared URL (optional file or folder):",
             variable=self.dropbox_url_var,
             file_types=[],
@@ -691,7 +722,7 @@ class AutocutV1UI:
         )
         self._path_row(
             path_frame,
-            row=6,
+            row=7,
             label="Dropbox API token (required for Dropbox URL):",
             variable=self.dropbox_token_var,
             file_types=[],
@@ -705,7 +736,7 @@ class AutocutV1UI:
         )
         self._path_row(
             path_frame,
-            row=7,
+            row=8,
             label="Dropbox Select User (team token only, e.g. dbmid:...):",
             variable=self.dropbox_select_user_var,
             file_types=[],
@@ -725,7 +756,7 @@ class AutocutV1UI:
             fg=self.brand["muted"],
             font=(self.font_family, 10),
         )
-        self.dropbox_status_label.grid(row=8, column=1, sticky=tk.W, padx=6, pady=(2, 6))
+        self.dropbox_status_label.grid(row=9, column=1, sticky=tk.W, padx=6, pady=(2, 6))
         self.dropbox_validate_button = ttk.Button(
             path_frame,
             text="Validate Link",
@@ -733,7 +764,7 @@ class AutocutV1UI:
             width=14,
             style="Secondary.TButton",
         )
-        self.dropbox_validate_button.grid(row=8, column=2, padx=(0, 4), pady=(2, 6), sticky=tk.W)
+        self.dropbox_validate_button.grid(row=9, column=2, padx=(0, 4), pady=(2, 6), sticky=tk.W)
 
         opts_frame = ttk.LabelFrame(container, text="Timing & Options", padding=12, style="Card.TLabelframe")
         opts_frame.pack(fill=tk.X, pady=(10, 0))
@@ -746,6 +777,9 @@ class AutocutV1UI:
             ("FPS", self.fps_var),
             ("Min build seconds", self.min_build_var),
             ("Min slide seconds", self.min_slide_var),
+            ("Pause threshold sec", self.pause_threshold_var),
+            ("Retake preroll sec", self.retake_preroll_var),
+            ("Retake postroll sec", self.retake_postroll_var),
         ]
         for idx, (label, var) in enumerate(fields):
             ttk.Label(opts_frame, text=label, style="Body.TLabel").grid(
@@ -791,6 +825,18 @@ class AutocutV1UI:
             variable=self.continue_on_error_var,
             style="Card.TCheckbutton",
         ).grid(row=3, column=5, columnspan=5, sticky=tk.W, pady=(8, 0))
+        ttk.Checkbutton(
+            opts_frame,
+            text="Enable transcript-based retake/mistake culling",
+            variable=self.retake_cull_enabled_var,
+            style="Card.TCheckbutton",
+        ).grid(row=4, column=0, columnspan=6, sticky=tk.W, pady=(8, 0))
+        ttk.Checkbutton(
+            opts_frame,
+            text="Include long dead-air pauses in culling",
+            variable=self.retake_cull_pauses_var,
+            style="Card.TCheckbutton",
+        ).grid(row=4, column=6, columnspan=5, sticky=tk.W, pady=(8, 0))
 
         action_frame = ttk.Frame(container, style="Root.TFrame")
         action_frame.pack(fill=tk.X, pady=(10, 0))
@@ -1240,6 +1286,7 @@ class AutocutV1UI:
         keynote_mov_input = self.keynote_mov_var.get().strip()
         video_input = self.video_var.get().strip()
         script_input = self.script_var.get().strip()
+        transcript_input = self.transcript_var.get().strip()
         dropbox_url_input = self.dropbox_url_var.get().strip()
         dropbox_token_input = self.dropbox_token_var.get().strip()
         dropbox_select_user_input = self.dropbox_select_user_var.get().strip()
@@ -1248,7 +1295,14 @@ class AutocutV1UI:
         # auto-promote it to Dropbox URL mode.
         dropbox_candidates = [
             value
-            for value in [dropbox_url_input, keynote_input, keynote_mov_input, video_input, script_input]
+            for value in [
+                dropbox_url_input,
+                keynote_input,
+                keynote_mov_input,
+                video_input,
+                script_input,
+                transcript_input,
+            ]
             if looks_like_dropbox_url(value)
         ]
         if dropbox_candidates:
@@ -1267,6 +1321,9 @@ class AutocutV1UI:
             if looks_like_url(script_input):
                 script_input = ""
                 self.script_var.set("")
+            if looks_like_url(transcript_input):
+                transcript_input = ""
+                self.transcript_var.set("")
 
         if self._dropbox_validating:
             messagebox.showinfo(
@@ -1287,6 +1344,7 @@ class AutocutV1UI:
             ("Keynote MOV", keynote_mov_input),
             ("Video", video_input),
             ("Script", script_input),
+            ("Transcript", transcript_input),
         ]:
             if value and looks_like_url(value):
                 messagebox.showerror(
@@ -1326,6 +1384,13 @@ class AutocutV1UI:
                 messagebox.showerror("Invalid Path", f"Script path does not exist:\n{script_path}")
                 return
 
+        transcript_path: Path | None = None
+        if transcript_input:
+            transcript_path = Path(transcript_input).expanduser().resolve()
+            if not transcript_path.exists():
+                messagebox.showerror("Invalid Path", f"Transcript path does not exist:\n{transcript_path}")
+                return
+
         if dropbox_url_input and not dropbox_token_input:
             messagebox.showerror(
                 "Missing Dropbox Token",
@@ -1352,9 +1417,18 @@ class AutocutV1UI:
             fps = int(self.fps_var.get().strip())
             min_build_seconds = float(self.min_build_var.get().strip())
             min_slide_seconds = float(self.min_slide_var.get().strip())
+            pause_threshold_seconds = float(self.pause_threshold_var.get().strip())
+            retake_preroll_seconds = float(self.retake_preroll_var.get().strip())
+            retake_postroll_seconds = float(self.retake_postroll_var.get().strip())
         except ValueError:
             messagebox.showerror("Invalid Timing", "Timing/FPS fields must be numeric.")
             return
+
+        retake_cull_mode = "none"
+        if self.retake_cull_enabled_var.get():
+            retake_cull_mode = (
+                "markers-and-pauses" if self.retake_cull_pauses_var.get() else "markers"
+            )
 
         self.worker_running = True
         self.run_button.configure(state=tk.DISABLED)
@@ -1365,6 +1439,7 @@ class AutocutV1UI:
             "keynote_mov_path": keynote_mov_path,
             "video_path": video_path,
             "script_path": script_path,
+            "transcript_path": transcript_path,
             "dropbox_url": dropbox_url_input or None,
             "dropbox_token": dropbox_token_input or None,
             "dropbox_select_user": dropbox_select_user_input or None,
@@ -1376,6 +1451,10 @@ class AutocutV1UI:
             "fps": fps,
             "min_build_seconds": min_build_seconds,
             "min_slide_seconds": min_slide_seconds,
+            "retake_cull_mode": retake_cull_mode,
+            "pause_threshold_seconds": pause_threshold_seconds,
+            "retake_preroll_seconds": retake_preroll_seconds,
+            "retake_postroll_seconds": retake_postroll_seconds,
             "timing_mode": "auto-fit" if self.auto_fit_timing_var.get() else "fixed",
             "export_xml": self.export_xml_var.get(),
             "export_edl": self.export_edl_var.get(),
@@ -1398,6 +1477,7 @@ class AutocutV1UI:
         keynote_mov_path: Path | None = config.get("keynote_mov_path")  # type: ignore[assignment]
         video_path: Path | None = config.get("video_path")  # type: ignore[assignment]
         script_path: Path | None = config.get("script_path")  # type: ignore[assignment]
+        transcript_path: Path | None = config.get("transcript_path")  # type: ignore[assignment]
         dropbox_url: str | None = config.get("dropbox_url")  # type: ignore[assignment]
         dropbox_token: str | None = config.get("dropbox_token")  # type: ignore[assignment]
         dropbox_select_user: str | None = config.get("dropbox_select_user")  # type: ignore[assignment]
@@ -1424,6 +1504,7 @@ class AutocutV1UI:
                 keynote_mov_path = keynote_mov_path or dropbox_stage_root
                 video_path = video_path or dropbox_stage_root
                 script_path = script_path or dropbox_stage_root
+                transcript_path = transcript_path or dropbox_stage_root
             except Exception as exc:
                 self.log(f"Dropbox download failed: {exc}")
                 self.log("=" * 72)
@@ -1443,6 +1524,7 @@ class AutocutV1UI:
             keynote_mov_path=keynote_mov_path,
             video_path=video_path,
             script_path=script_path,
+            transcript_path=transcript_path,
         )
         if not projects:
             self.log(f"No .key files found in source: {keynote_path}")
@@ -1460,6 +1542,7 @@ class AutocutV1UI:
             self.log(f"Keynote MOV: {project.keynote_mov if project.keynote_mov else 'none'}")
             self.log(f"Video:   {project.video if project.video else 'MISSING'}")
             self.log(f"Script:  {project.script_pdf if project.script_pdf else 'none'}")
+            self.log(f"Transcript: {project.transcript_json if project.transcript_json else 'none'}")
 
             if project.video is None:
                 self.log("Skipping: No matching video found.")
@@ -1512,6 +1595,20 @@ class AutocutV1UI:
             ]
             if project.script_pdf:
                 build_cmd.extend(["--script-pdf", str(project.script_pdf)])
+            if project.transcript_json:
+                build_cmd.extend(["--transcript-json", str(project.transcript_json)])
+            build_cmd.extend(
+                [
+                    "--retake-cull-mode",
+                    str(config["retake_cull_mode"]),
+                    "--pause-threshold-seconds",
+                    str(config["pause_threshold_seconds"]),
+                    "--retake-preroll-seconds",
+                    str(config["retake_preroll_seconds"]),
+                    "--retake-postroll-seconds",
+                    str(config["retake_postroll_seconds"]),
+                ]
+            )
 
             self.log("Running JSON build...")
             code, output = self._run_subprocess(build_cmd)
@@ -1688,6 +1785,7 @@ class AutocutV1UI:
             try:
                 payload = json.loads(plan_path.read_text(encoding="utf-8"))
                 summary = payload.get("summary", {})
+                retake_summary = (summary.get("retake_culling") or {}) if isinstance(summary, dict) else {}
                 self.log(
                     "Summary: "
                     + json.dumps(
@@ -1696,6 +1794,8 @@ class AutocutV1UI:
                             "video_duration_sec": summary.get("video_duration_sec"),
                             "main_sequence_cut_count": summary.get("main_sequence_cut_count"),
                             "script_cue_count": summary.get("script_cue_count"),
+                            "retake_removed_sec": retake_summary.get("removed_duration_sec"),
+                            "retake_exclusion_count": retake_summary.get("exclusion_count"),
                         }
                     )
                 )

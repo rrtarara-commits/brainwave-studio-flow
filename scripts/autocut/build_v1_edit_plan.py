@@ -5,6 +5,7 @@ This V1 is intentionally rule-based:
 - Keynote is the timing backbone (slide/build stage sequence)
 - Script cues (if available) influence camera source preference
 - Main sequence switches among wide / punch / pip_slides
+- Optional transcript-aware retake culling removes obvious mistakes and dead-air
 """
 
 from __future__ import annotations
@@ -26,6 +27,14 @@ from typing import Any
 CUE_PATTERN = re.compile(r"(?i)\b(ON-?CAM|SLIDE|PIP|B-?ROLL|GFX|MUSIC)\b")
 SECTION_PATTERN = re.compile(r"^\[.+\]$")
 IMAGE_NUM_PATTERN = re.compile(r"\.(\d+)\.png$", re.IGNORECASE)
+RETAKE_PATTERNS = [
+    re.compile(r"(?i)\b(let me|i(?:'| a)?ll)\s+(try|do)\s+(that\s+)?again\b"),
+    re.compile(r"(?i)\b(start over|restart|reset)\b"),
+    re.compile(r"(?i)\b(cut that|ignore that|delete that)\b"),
+    re.compile(r"(?i)\b(scratch that)\b"),
+    re.compile(r"(?i)\b(take\s*(2|two|3|three))\b"),
+    re.compile(r"(?i)^(sorry|hold on)\b"),
+]
 
 
 def fail(message: str) -> None:
@@ -198,6 +207,220 @@ def ffprobe_duration(video_path: Path) -> float | None:
         return float((result.stdout or "").strip())
     except Exception:
         return None
+
+
+def load_transcript_segments(transcript_json_path: Path) -> list[dict[str, Any]]:
+    payload = json.loads(transcript_json_path.read_text(encoding="utf-8"))
+
+    def add_segment(target: list[dict[str, Any]], start: Any, end: Any, text: Any) -> None:
+        try:
+            s = float(start)
+            e = float(end)
+        except Exception:
+            return
+        if e <= s:
+            return
+        target.append(
+            {
+                "start_sec": round(s, 3),
+                "end_sec": round(e, 3),
+                "text": str(text or "").strip(),
+            }
+        )
+
+    raw_segments: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("segments"), list):
+            for seg in payload["segments"]:
+                if isinstance(seg, dict):
+                    add_segment(raw_segments, seg.get("start"), seg.get("end"), seg.get("text"))
+        if isinstance(payload.get("utterances"), list):
+            for seg in payload["utterances"]:
+                if isinstance(seg, dict):
+                    add_segment(
+                        raw_segments,
+                        seg.get("start"),
+                        seg.get("end"),
+                        seg.get("transcript") or seg.get("text"),
+                    )
+    if isinstance(payload, list):
+        for seg in payload:
+            if isinstance(seg, dict):
+                add_segment(
+                    raw_segments,
+                    seg.get("start") or seg.get("start_sec"),
+                    seg.get("end") or seg.get("end_sec"),
+                    seg.get("text") or seg.get("transcript"),
+                )
+
+    return sorted(raw_segments, key=lambda x: (x["start_sec"], x["end_sec"]))
+
+
+def merge_time_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not ranges:
+        return []
+    ordered = sorted(ranges, key=lambda x: x[0])
+    merged: list[tuple[float, float]] = []
+    for start, end in ordered:
+        if end <= start:
+            continue
+        if not merged:
+            merged.append((start, end))
+            continue
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + 1e-6:
+            merged[-1] = (prev_start, max(prev_end, end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def detect_retake_exclusions(
+    *,
+    transcript_segments: list[dict[str, Any]],
+    mode: str,
+    pause_threshold_seconds: float,
+    retake_preroll_seconds: float,
+    retake_postroll_seconds: float,
+    timeline_max_sec: float | None,
+) -> tuple[list[tuple[float, float]], dict[str, Any]]:
+    if mode == "none" or not transcript_segments:
+        return [], {"enabled": mode != "none", "mode": mode}
+
+    exclusions: list[tuple[float, float]] = []
+    marker_hits: list[dict[str, Any]] = []
+    pause_hits: list[dict[str, Any]] = []
+    max_sec = timeline_max_sec if timeline_max_sec is not None else segment_end(transcript_segments)
+
+    for seg in transcript_segments:
+        text = str(seg.get("text") or "").strip()
+        if not text:
+            continue
+        matched = None
+        for pattern in RETAKE_PATTERNS:
+            if pattern.search(text):
+                matched = pattern.pattern
+                break
+        if not matched:
+            continue
+        start = max(0.0, float(seg["start_sec"]) - retake_preroll_seconds)
+        end = float(seg["end_sec"]) + retake_postroll_seconds
+        if max_sec is not None:
+            end = min(end, max_sec)
+        if end > start:
+            exclusions.append((start, end))
+            marker_hits.append(
+                {
+                    "start_sec": round(start, 3),
+                    "end_sec": round(end, 3),
+                    "trigger_text": text[:220],
+                    "pattern": matched,
+                }
+            )
+
+    if mode == "markers-and-pauses":
+        for prev, nxt in zip(transcript_segments, transcript_segments[1:]):
+            gap_start = float(prev["end_sec"])
+            gap_end = float(nxt["start_sec"])
+            gap_duration = gap_end - gap_start
+            if gap_duration >= pause_threshold_seconds:
+                exclusions.append((gap_start, gap_end))
+                pause_hits.append(
+                    {
+                        "start_sec": round(gap_start, 3),
+                        "end_sec": round(gap_end, 3),
+                        "duration_sec": round(gap_duration, 3),
+                    }
+                )
+
+    merged = merge_time_ranges(exclusions)
+    return merged, {
+        "enabled": True,
+        "mode": mode,
+        "pause_threshold_seconds": pause_threshold_seconds,
+        "retake_preroll_seconds": retake_preroll_seconds,
+        "retake_postroll_seconds": retake_postroll_seconds,
+        "marker_hit_count": len(marker_hits),
+        "pause_hit_count": len(pause_hits),
+        "marker_hits": marker_hits,
+        "pause_hits": pause_hits,
+    }
+
+
+def removed_time_before(exclusions: list[tuple[float, float]], t: float) -> float:
+    removed = 0.0
+    for start, end in exclusions:
+        if end <= t:
+            removed += end - start
+        elif start < t < end:
+            removed += t - start
+            break
+        else:
+            break
+    return removed
+
+
+def apply_exclusions_and_compact(
+    *,
+    segments: list[dict[str, Any]],
+    exclusions: list[tuple[float, float]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not segments or not exclusions:
+        return segments, {"applied": False, "removed_duration_sec": 0.0}
+
+    output: list[dict[str, Any]] = []
+    original_duration = 0.0
+    kept_duration = 0.0
+
+    for segment in segments:
+        seg_start = float(segment["start_sec"])
+        seg_end = float(segment["end_sec"])
+        if seg_end <= seg_start:
+            continue
+        original_duration += seg_end - seg_start
+
+        cursor = seg_start
+        for ex_start, ex_end in exclusions:
+            if ex_end <= cursor:
+                continue
+            if ex_start >= seg_end:
+                break
+            keep_end = min(seg_end, ex_start)
+            if keep_end > cursor + 1e-6:
+                shift_start = removed_time_before(exclusions, cursor)
+                shift_end = removed_time_before(exclusions, keep_end)
+                new_start = cursor - shift_start
+                new_end = keep_end - shift_end
+                if new_end > new_start + 1e-6:
+                    clipped = dict(segment)
+                    clipped["start_sec"] = round(new_start, 3)
+                    clipped["end_sec"] = round(new_end, 3)
+                    clipped["duration_sec"] = round(new_end - new_start, 3)
+                    output.append(clipped)
+                    kept_duration += new_end - new_start
+            cursor = max(cursor, ex_end)
+            if cursor >= seg_end:
+                break
+
+        if cursor < seg_end - 1e-6:
+            shift_start = removed_time_before(exclusions, cursor)
+            shift_end = removed_time_before(exclusions, seg_end)
+            new_start = cursor - shift_start
+            new_end = seg_end - shift_end
+            if new_end > new_start + 1e-6:
+                clipped = dict(segment)
+                clipped["start_sec"] = round(new_start, 3)
+                clipped["end_sec"] = round(new_end, 3)
+                clipped["duration_sec"] = round(new_end - new_start, 3)
+                output.append(clipped)
+                kept_duration += new_end - new_start
+
+    return output, {
+        "applied": True,
+        "removed_duration_sec": round(max(0.0, original_duration - kept_duration), 3),
+        "original_duration_sec": round(original_duration, 3),
+        "result_duration_sec": round(kept_duration, 3),
+    }
 
 
 def build_script_beats(cue_lines: list[dict[str, Any]], timeline_duration: float) -> list[dict[str, Any]]:
@@ -540,6 +763,12 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         if not video_path.exists():
             fail(f"video file not found: {video_path}")
 
+    transcript_json_path: Path | None = None
+    if args.transcript_json:
+        transcript_json_path = Path(args.transcript_json).expanduser().resolve()
+        if not transcript_json_path.exists():
+            fail(f"transcript JSON not found: {transcript_json_path}")
+
     with tempfile.TemporaryDirectory(prefix="autocut-v1-") as temp_dir:
         temp_root = Path(temp_dir)
         final_export_dir = temp_root / "final_slides"
@@ -615,6 +844,16 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         }
         if script_pdf_path is not None:
             script_details = parse_script_pdf(script_pdf_path)
+
+        transcript_segments: list[dict[str, Any]] = []
+        transcript_warning: str | None = None
+        if transcript_json_path is not None:
+            try:
+                transcript_segments = load_transcript_segments(transcript_json_path)
+                if not transcript_segments:
+                    transcript_warning = "transcript JSON loaded but no usable segments were found."
+            except Exception as exc:
+                transcript_warning = f"failed to parse transcript JSON: {exc}"
 
         cue_lines = script_details.get("cue_lines", [])
         script_beats = build_script_beats(cue_lines, timeline_duration)
@@ -700,6 +939,67 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 cursor += take
 
+        retake_culling: dict[str, Any] = {
+            "enabled": args.retake_cull_mode != "none",
+            "mode": args.retake_cull_mode,
+            "transcript_path": str(transcript_json_path) if transcript_json_path else None,
+            "transcript_segment_count": len(transcript_segments),
+            "exclusion_count": 0,
+            "removed_duration_sec": 0.0,
+        }
+        if transcript_warning:
+            warnings.append(transcript_warning)
+            retake_culling["warning"] = transcript_warning
+        if args.retake_cull_mode != "none" and transcript_json_path is None:
+            warning = "retake culling enabled but no transcript JSON was provided."
+            warnings.append(warning)
+            retake_culling["warning"] = warning
+
+        culling_horizon = max(
+            segment_end(slide_timeline),
+            video_duration or 0.0,
+            segment_end(transcript_segments),
+        )
+        exclusions, culling_meta = detect_retake_exclusions(
+            transcript_segments=transcript_segments,
+            mode=args.retake_cull_mode,
+            pause_threshold_seconds=args.pause_threshold_seconds,
+            retake_preroll_seconds=args.retake_preroll_seconds,
+            retake_postroll_seconds=args.retake_postroll_seconds,
+            timeline_max_sec=culling_horizon if culling_horizon > 0 else None,
+        )
+        retake_culling.update(culling_meta)
+        if exclusions:
+            retake_culling["exclusion_count"] = len(exclusions)
+            retake_culling["exclusions"] = [
+                {"start_sec": round(start, 3), "end_sec": round(end, 3)} for start, end in exclusions
+            ]
+            culled_slide_timeline, slide_cull_stats = apply_exclusions_and_compact(
+                segments=slide_timeline,
+                exclusions=exclusions,
+            )
+            culled_main_sequence, main_cull_stats = apply_exclusions_and_compact(
+                segments=rough_main_sequence,
+                exclusions=exclusions,
+            )
+            if culled_slide_timeline and culled_main_sequence:
+                slide_timeline = culled_slide_timeline
+                rough_main_sequence = culled_main_sequence
+                timeline_duration = round(segment_end(slide_timeline), 3)
+                retake_culling["removed_duration_sec"] = main_cull_stats["removed_duration_sec"]
+                retake_culling["slide_timeline_stats"] = slide_cull_stats
+                retake_culling["main_timeline_stats_pre_merge"] = main_cull_stats
+                warnings.append(
+                    "Retake culling removed "
+                    f"{main_cull_stats['removed_duration_sec']}s "
+                    f"across {len(exclusions)} excluded windows."
+                )
+            else:
+                warnings.append(
+                    "Retake culling found exclusion windows, but preserving original timeline because "
+                    "culling removed all timeline segments."
+                )
+
         main_sequence = merge_adjacent_segments(rough_main_sequence)
 
         main_sequence_duration = round(segment_end(main_sequence), 3)
@@ -751,6 +1051,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "keynote": str(keynote_path),
                 "script_pdf": str(script_pdf_path) if script_pdf_path else None,
                 "video": str(video_path) if video_path else None,
+                "transcript_json": str(transcript_json_path) if transcript_json_path else None,
             },
             "timing_defaults": {
                 "build_seconds": args.build_seconds,
@@ -775,6 +1076,13 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "main_sequence_cut_count": len(main_sequence),
                 "script_cue_count": len(cue_lines),
                 "timing_adjustment": timing_adjustment,
+                "retake_culling": {
+                    "enabled": retake_culling["enabled"],
+                    "mode": retake_culling["mode"],
+                    "transcript_segment_count": retake_culling["transcript_segment_count"],
+                    "exclusion_count": retake_culling["exclusion_count"],
+                    "removed_duration_sec": retake_culling["removed_duration_sec"],
+                },
             },
             "assets": {
                 "main_sources": ["wide", "punch", "pip_slides"],
@@ -788,6 +1096,13 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "cues": cue_lines,
                 "beats": script_beats,
             },
+            "transcript": {
+                "available": transcript_json_path is not None and len(transcript_segments) > 0,
+                "warning": transcript_warning,
+                "path": str(transcript_json_path) if transcript_json_path else None,
+                "segment_count": len(transcript_segments),
+            },
+            "retake_culling": retake_culling,
             "timeline": {
                 "slide_timeline": slide_timeline,
                 "main_sequence": main_sequence,
@@ -807,6 +1122,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keynote", required=True, help="Path to a .key file")
     parser.add_argument("--script-pdf", help="Path to script PDF (optional)")
     parser.add_argument("--video", help="Path to presenter video (optional)")
+    parser.add_argument(
+        "--transcript-json",
+        help=(
+            "Optional transcript JSON for retake/mistake culling. "
+            "Supports Whisper-style {segments:[{start,end,text}]} and utterance lists."
+        ),
+    )
     parser.add_argument(
         "--output",
         default="autocut_output/edit_plan.json",
@@ -840,6 +1162,33 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "append-oncam-tail"],
         default="append-oncam-tail",
         help="How to reconcile planned timeline vs video duration.",
+    )
+    parser.add_argument(
+        "--retake-cull-mode",
+        choices=["none", "markers", "markers-and-pauses"],
+        default="markers-and-pauses",
+        help=(
+            "Remove obvious retakes/mistakes before export. "
+            "Requires --transcript-json; 'markers-and-pauses' also removes long dead-air gaps."
+        ),
+    )
+    parser.add_argument(
+        "--pause-threshold-seconds",
+        type=float,
+        default=2.8,
+        help="When retake-cull-mode includes pauses, remove transcript gaps >= this duration.",
+    )
+    parser.add_argument(
+        "--retake-preroll-seconds",
+        type=float,
+        default=0.8,
+        help="Seconds trimmed before a detected retake marker phrase.",
+    )
+    parser.add_argument(
+        "--retake-postroll-seconds",
+        type=float,
+        default=5.5,
+        help="Seconds trimmed after a detected retake marker phrase.",
     )
     parser.add_argument("--fps", type=int, default=30)
     return parser.parse_args()

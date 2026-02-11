@@ -4,6 +4,7 @@ V1 generates a first-pass `edit_plan.json` from:
 - Keynote deck (`.key`) as the timing backbone
 - Optional script PDF cue extraction
 - Optional presenter video duration check
+- Optional transcript JSON for retake/mistake culling
 
 ## What It Produces
 
@@ -40,12 +41,20 @@ pip install pypdf
 npm run autocut:v1 -- \
   --keynote "/Users/ray/Downloads/FVC25007-Keynote-V5.key" \
   --script-pdf "/Users/ray/Downloads/[DMS002] Script.pdf" \
+  --transcript-json "/Users/ray/Downloads/FVC25007-transcript.json" \
   --video "/Users/ray/Downloads/FVC25007-Keynote-V5.mov" \
+  --retake-cull-mode markers-and-pauses \
   --video-fit-mode append-oncam-tail \
   --output "./autocut_output/FVC25007_edit_plan.json"
 ```
 
 If `pypdf` is not installed, the run still completes and emits a warning in `warnings`.
+
+Retake culling controls:
+- `--retake-cull-mode none|markers|markers-and-pauses` (default: `markers-and-pauses`)
+- `--pause-threshold-seconds` (used when pauses are enabled)
+- `--retake-preroll-seconds`
+- `--retake-postroll-seconds`
 
 ## Basic UI Launcher
 
@@ -57,6 +66,7 @@ npm run autocut:ui
 
 UI supports:
 - local file/folder selection for Keynote, Keynote animation MOV, video, and script PDF
+- optional transcript JSON input (Whisper-style segments) for retake/dead-air culling
 - folder batch processing (multiple projects)
 - optional Dropbox shared URL ingest via Dropbox API
 - automatic per-project delivery manifest + Premiere import guide output
@@ -155,6 +165,6 @@ Outputs:
 ## Notes
 
 - V1 is rule-based and deterministic.
-- It does not yet use transcript alignment.
+- Transcript can drive basic retake/mistake culling (marker phrases and long pauses), but not full semantic alignment.
 - If video is longer than slide timeline, V1 can append on-cam tail coverage (`--video-fit-mode append-oncam-tail`).
 - For best results, V2 should align script/transcript semantics to slide stages and refine PiP/MOGRT automation.

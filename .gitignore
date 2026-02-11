@@ -32,3 +32,4 @@ __pycache__/
 .venv-autocut/
 autocut_output/
 supabase/.temp/
+.vercel
