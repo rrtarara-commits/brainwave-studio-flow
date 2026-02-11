@@ -59,6 +59,7 @@ UI supports:
 - local file/folder selection for Keynote, Keynote animation MOV, video, and script PDF
 - folder batch processing (multiple projects)
 - optional Dropbox shared URL ingest via Dropbox API
+- automatic per-project delivery manifest + Premiere import guide output
 
 Dropbox API notes:
 - provide a Dropbox shared file or folder URL
@@ -132,6 +133,24 @@ How this works:
 - source stage playback uses `build_seconds` for `build_hold` stages
 - source stage playback uses `slide_seconds` for `slide_hold` stages
 - when target stage duration exceeds source stage playback, a freeze-hold is baked in
+
+## Write Delivery Manifest + Premiere Guide
+
+Generate a machine-readable manifest plus a human-friendly Premiere import guide:
+
+```bash
+npm run autocut:manifest -- \
+  --plan "./autocut_output/FVC25007_edit_plan.json" \
+  --main-video "/Users/ray/Downloads/FVC25007-Keynote-V5.mov" \
+  --slides-video "./autocut_output/FVC25007_slides_timed.mov" \
+  --main-edl "./autocut_output/FVC25007_main.edl" \
+  --oncam-edl "./autocut_output/FVC25007_oncam.edl" \
+  --slides-edl "./autocut_output/FVC25007_slides_overlay.edl"
+```
+
+Outputs:
+- `*_delivery_manifest.json` (artifact inventory + reel mapping + import steps)
+- `*_premiere_import.md` (step-by-step import instructions)
 
 ## Notes
 

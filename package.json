@@ -22,6 +22,7 @@
     "autocut:xml": "python3 ./scripts/autocut/export_premiere_xml_v1.py",
     "autocut:edl": "python3 ./scripts/autocut/export_edl_v1.py",
     "autocut:slidesmov": "python3 ./scripts/autocut/render_keynote_overlay_v1.py",
+    "autocut:manifest": "python3 ./scripts/autocut/write_delivery_manifest_v1.py",
     "autocut:ui": "python3 ./scripts/autocut/autocut_v1_ui.py"
   },
   "dependencies": {

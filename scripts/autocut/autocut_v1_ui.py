@@ -36,6 +36,7 @@ BUILD_SCRIPT = SCRIPT_DIR / "build_v1_edit_plan.py"
 XML_SCRIPT = SCRIPT_DIR / "export_premiere_xml_v1.py"
 EDL_SCRIPT = SCRIPT_DIR / "export_edl_v1.py"
 SLIDE_MOV_SCRIPT = SCRIPT_DIR / "render_keynote_overlay_v1.py"
+MANIFEST_SCRIPT = SCRIPT_DIR / "write_delivery_manifest_v1.py"
 
 DROPBOX_API_BASE = "https://api.dropboxapi.com/2"
 DROPBOX_CONTENT_API_BASE = "https://content.dropboxapi.com/2"
@@ -1475,6 +1476,8 @@ class AutocutV1UI:
             oncam_edl_path = project_dir / f"{project.project_key}_oncam.edl"
             slides_edl_path = project_dir / f"{project.project_key}_slides_overlay.edl"
             slide_mov_path = project_dir / f"{project.project_key}_slides_timed.mov"
+            manifest_json_path = project_dir / f"{project.project_key}_delivery_manifest.json"
+            import_guide_path = project_dir / f"{project.project_key}_premiere_import.md"
             stage_dir = project_dir / f"{project.project_key}_stages"
 
             build_cmd = [
@@ -1649,6 +1652,38 @@ class AutocutV1UI:
                 else:
                     self.log("Slides-overlay EDL skipped: timed slide MOV is unavailable.")
 
+            manifest_cmd = [
+                sys.executable,
+                str(MANIFEST_SCRIPT),
+                "--plan",
+                str(plan_path),
+                "--project-dir",
+                str(project_dir),
+                "--main-video",
+                str(project.video),
+                "--manifest-json",
+                str(manifest_json_path),
+                "--import-guide",
+                str(import_guide_path),
+            ]
+            if xml_path.exists():
+                manifest_cmd.extend(["--xml", str(xml_path)])
+            if edl_path.exists():
+                manifest_cmd.extend(["--main-edl", str(edl_path)])
+            if oncam_edl_path.exists():
+                manifest_cmd.extend(["--oncam-edl", str(oncam_edl_path)])
+            if slides_edl_path.exists():
+                manifest_cmd.extend(["--slides-edl", str(slides_edl_path)])
+            if slides_for_edl and slides_for_edl.exists():
+                manifest_cmd.extend(["--slides-video", str(slides_for_edl)])
+
+            self.log("Writing delivery manifest...")
+            code, output = self._run_subprocess(manifest_cmd)
+            if output:
+                self.log(output)
+            if code != 0:
+                self.log("Delivery manifest generation failed (non-fatal).")
+
             # Optional short summary readback.
             try:
                 payload = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -1688,6 +1723,8 @@ def main() -> None:
         fail(f"Missing EDL export script: {EDL_SCRIPT}")
     if not SLIDE_MOV_SCRIPT.exists():
         fail(f"Missing timed slide MOV script: {SLIDE_MOV_SCRIPT}")
+    if not MANIFEST_SCRIPT.exists():
+        fail(f"Missing delivery manifest script: {MANIFEST_SCRIPT}")
 
     root = tk.Tk()
     app = AutocutV1UI(root)
