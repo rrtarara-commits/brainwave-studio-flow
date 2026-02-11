@@ -17,7 +17,12 @@
     "selfhost:install-stack": "bash ./scripts/selfhost/install-supabase-docker.sh",
     "selfhost:print-values": "bash ./scripts/selfhost/print-selfhost-values.sh",
     "selfhost:apply-values": "bash ./scripts/selfhost/apply-selfhost-values.sh",
-    "selfhost:sync-gcp-secrets": "bash ./scripts/selfhost/sync-gcp-secrets.sh"
+    "selfhost:sync-gcp-secrets": "bash ./scripts/selfhost/sync-gcp-secrets.sh",
+    "autocut:v1": "python3 ./scripts/autocut/build_v1_edit_plan.py",
+    "autocut:xml": "python3 ./scripts/autocut/export_premiere_xml_v1.py",
+    "autocut:edl": "python3 ./scripts/autocut/export_edl_v1.py",
+    "autocut:slidesmov": "python3 ./scripts/autocut/render_keynote_overlay_v1.py",
+    "autocut:ui": "python3 ./scripts/autocut/autocut_v1_ui.py"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
