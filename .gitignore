@@ -29,4 +29,6 @@ dist-ssr
 # Python artifacts
 __pycache__/
 *.py[cod]
+.venv-autocut/
+autocut_output/
 supabase/.temp/
