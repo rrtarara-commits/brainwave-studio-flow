@@ -25,13 +25,31 @@ from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 
 app = Flask(__name__)
 
+# Configuration helpers
+def _env_trim(name: str, default: str = '') -> str:
+    return (os.environ.get(name, default) or '').strip()
+
+
+def _sanitize_header_secret(raw: str) -> str:
+    # Remove any whitespace/newlines that can invalidate HTTP header values.
+    # JWTs and callback secrets should not contain spaces.
+    return ''.join((raw or '').split())
+
+
 # Configuration
-GCS_BUCKET = os.environ.get('GCS_BUCKET', 'tcv-video-uploads')
-SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SUPABASE_SERVICE_ROLE_KEY = (os.environ.get('SUPABASE_SERVICE_ROLE_KEY') or '').strip()
-# Strip whitespace/newlines from secret to prevent header errors
-GCP_CALLBACK_SECRET = (os.environ.get('GCP_CALLBACK_SECRET') or '').strip()
-PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT')
+GCS_BUCKET = _env_trim('GCS_BUCKET', 'tcv-video-uploads')
+SUPABASE_URL = _env_trim('SUPABASE_URL').rstrip('/')
+SUPABASE_SERVICE_ROLE_KEY = _sanitize_header_secret(_env_trim('SUPABASE_SERVICE_ROLE_KEY'))
+GCP_CALLBACK_SECRET = _sanitize_header_secret(_env_trim('GCP_CALLBACK_SECRET'))
+PROJECT_ID = _env_trim('GOOGLE_CLOUD_PROJECT')
+
+print(
+    "[Config] "
+    f"bucket={GCS_BUCKET or '<missing>'}, "
+    f"supabase_url={'set' if SUPABASE_URL else 'missing'}, "
+    f"service_key_len={len(SUPABASE_SERVICE_ROLE_KEY)}, "
+    f"callback_secret_len={len(GCP_CALLBACK_SECRET)}"
+)
 
 # FFmpeg tuning. This service commonly runs multiple FFmpeg processes in parallel,
 # so we want to avoid oversubscribing CPU threads.
@@ -1069,6 +1087,16 @@ def submit_results(upload_id: str, visual_analysis: dict, audio_analysis: dict, 
             if attempt == max_attempts:
                 break
 
+            backoff_seconds = min(8.0, base_backoff_seconds * (2 ** (attempt - 1)))
+            time.sleep(backoff_seconds)
+        except Exception as e:
+            # E.g. malformed header values or non-requests runtime failures.
+            print(
+                f"Submit attempt {attempt}/{max_attempts} runtime error: {e} "
+                f"(callback_url={callback_url}, callback_secret_len={len(GCP_CALLBACK_SECRET)})"
+            )
+            if attempt == max_attempts:
+                break
             backoff_seconds = min(8.0, base_backoff_seconds * (2 ** (attempt - 1)))
             time.sleep(backoff_seconds)
 
